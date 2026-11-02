@@ -176,6 +176,25 @@ pub const Index = struct {
 
 const store_key = "nanolight.launches";
 
+/// Opens the app at `path` without waiting for it: LaunchServices answers
+/// when the app has started, which can take seconds (an app reinstalled
+/// while Nanolight ran, issue #7), and `openURL:` waited on the main
+/// thread meanwhile, with the panel frozen in front. Anything else
+/// (a file, a folder) opens through nanoui as before.
+pub fn launch(path: []const u8) void {
+    if (!mac) return;
+    if (!std.mem.endsWith(u8, path, ".app")) {
+        _ = nanoui.shell.openPath(path);
+        return;
+    }
+    const pool = objc.Pool.push();
+    defer pool.pop();
+    const url = objc.msg(objc.Object, objc.class("NSURL"), "fileURLWithPath:", .{objc.nsString(path)});
+    const config = objc.msg(objc.Object, objc.class("NSWorkspaceOpenConfiguration"), "configuration", .{});
+    const ws = objc.msg(objc.Object, objc.class("NSWorkspace"), "sharedWorkspace", .{});
+    objc.msg(void, ws, "openApplicationAtURL:configuration:completionHandler:", .{ url, config, @as(?*anyopaque, null) });
+}
+
 /// The Finder's icon for `path`, drawn at 64 pixels and encoded as PNG.
 fn iconPng(gpa: std.mem.Allocator, path: []const u8) ?[]u8 {
     const pool = objc.Pool.push();

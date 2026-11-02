@@ -100,7 +100,7 @@ pub const Live = struct {
                 }
             }.f);
         } else {
-            _ = nanoui.shell.openPath(target);
+            @import("apps.zig").launch(target);
             // Its count went up: the other Macs suggest it too.
             if (l.acct) |*a| a.changed();
         }
