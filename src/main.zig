@@ -22,6 +22,7 @@ const Onboard = @import("onboard.zig").Onboard;
 const suggest = @import("suggest.zig");
 const Preview = @import("preview.zig").Preview;
 const single = @import("single.zig");
+const ClickThrough = @import("clickthrough.zig").ClickThrough;
 
 const suggest_key = "nanolight.suggest";
 /// The version an automatic update restarted into, for the new copy to say.
@@ -44,6 +45,8 @@ const Live = struct {
     /// The system's glass under the panel, which the window's views keep.
     glass: ?objc.Object = null,
     preview: Preview = .{},
+    /// Clicks outside the panel go to what is under it (clickthrough.zig).
+    through: ClickThrough = .{},
     /// The words Google is to be asked about once typing pauses, and how
     /// many pauses are still being waited out (only the last one asks).
     asking: [suggest.max_len]u8 = undefined,
@@ -195,6 +198,7 @@ const Live = struct {
     fn keyChanged(ctx: *anyopaque, w: *nanoui.Window) void {
         const l: *Live = @ptrCast(@alignCast(ctx));
         if (w.isFocused()) return;
+        l.through.stop();
         l.s.note = "";
         l.autoUpdate();
     }
@@ -209,6 +213,8 @@ const Live = struct {
     fn resize(ctx: *anyopaque, h: f32) void {
         const l: *Live = @ptrCast(@alignCast(ctx));
         l.preview.fit(h);
+        // The panel grew or shrank under a still pointer.
+        l.through.update();
         const g = l.glass orelse return;
         objc.msg(void, g, "setFrame:", .{glassFrame(h)});
     }
@@ -232,6 +238,7 @@ const Live = struct {
         w.setPosition(f.origin.x + (f.size.width - view.width) / 2 - view.shadow_margin, top + f.size.height * 0.2 - view.shadow_margin);
         l.s.reveal();
         w.show();
+        l.through.start();
         w.redraw();
     }
 
@@ -394,6 +401,7 @@ pub fn main(init: std.process.Init) !void {
     objc.msg(void, live.window.?.nswindow, "setHasShadow:", .{objc.NO});
     live.glass = backdrop(live.window.?, 18, if (o.active) o.height() else s.height());
     live.useKey(live.choice);
+    live.through = .{ .window = live.window, .height = &s.last_h };
     live.preview.watch(.{ .ctx = &live, .func = Live.pageKey });
     o.hooks = live.hooks();
     // The first run: the welcome, in the panel.
