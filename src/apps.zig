@@ -142,7 +142,11 @@ pub const Index = struct {
     /// Counts an opening, and keeps the counts in `store`.
     pub fn opened(ix: *Index, i: u32, store: ?nanoui.kv.Store) void {
         ix.launches.items[i] +|= 1;
-        const kv = store orelse return;
+        if (store) |kv| ix.save(kv);
+    }
+
+    /// Keeps every count in `kv` (as `opened` does, and a sync after it).
+    pub fn save(ix: *Index, kv: nanoui.kv.Store) void {
         var aw: std.Io.Writer.Allocating = .init(ix.gpa);
         defer aw.deinit();
         for (ix.apps.items, ix.launches.items) |a, l| if (l > 0) aw.writer.print("{s}\t{d}\n", .{ a.name, l }) catch return;

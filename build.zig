@@ -30,6 +30,8 @@ pub fn build(b: *std.Build) void {
     exe.root_module.linkFramework("Carbon", .{});
     // Opening at login, from its welcome (SMAppService).
     exe.root_module.linkFramework("ServiceManagement", .{});
+    // The Codegraff key, kept in the Keychain (src/keychain.zig).
+    exe.root_module.linkFramework("Security", .{});
     b.installArtifact(exe);
     const run = b.addRunArtifact(exe);
     run.addPassthruArgs();

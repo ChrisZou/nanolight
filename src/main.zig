@@ -23,12 +23,16 @@ const suggest = @import("suggest.zig");
 const Preview = @import("preview.zig").Preview;
 const single = @import("single.zig");
 const ClickThrough = @import("clickthrough.zig").ClickThrough;
+const account = @import("account.zig");
+const Settings = @import("settings.zig").Settings;
 
 const suggest_key = "nanolight.suggest";
 /// The version an automatic update restarted into, for the new copy to say.
 const updated_key = "nanolight.updated";
 /// How long the panel must have been away before an update restarts it.
 const auto_update_after_ms = 10 * 1000;
+/// When this Mac last changed its key or suggestions (settings.zig's `at`).
+const sync_at_key = "nanolight.sync.at";
 
 /// The window around the panel: shown and hidden. It is never resized: it
 /// is as tall as the panel can be, and clear below it; only the system
@@ -57,6 +61,10 @@ const Live = struct {
     updater: ?*nanoui.Updater = null,
     tray: ?*nanoui.Tray = null,
     update_label: [64]u8 = undefined,
+    /// Signed in to Codegraff, settings synced between Macs (account.zig).
+    /// Null in headless runs.
+    acct: ?account.Account = null,
+    account_label: [192]u8 = undefined,
 
     fn host(l: *Live) view.Host {
         return .{ .ctx = l, .open = open, .hide = hide, .resize = resize, .suggest = ask, .preview = showPage };
@@ -75,7 +83,89 @@ const Live = struct {
                     toggle(c.?);
                 }
             }.f);
-        } else _ = nanoui.shell.openPath(target);
+        } else {
+            _ = nanoui.shell.openPath(target);
+            // Its count went up: the other Macs suggest it too.
+            if (l.acct) |*a| a.changed();
+        }
+    }
+
+    // ----- sync (account.zig) -----
+
+    fn accountHooks(l: *Live) account.Hooks {
+        return .{ .ctx = l, .snapshot = snapshot, .apply = applySynced, .changed = accountChanged };
+    }
+
+    fn snapshot(ctx: *anyopaque, arena: std.mem.Allocator) Settings {
+        const l: *Live = @ptrCast(@alignCast(ctx));
+        const ix = l.s.index;
+        var list: std.ArrayList(@import("settings.zig").Launch) = .empty;
+        for (ix.apps.items, ix.launches.items) |a, n| if (n > 0) list.append(arena, .{ .name = a.name, .count = n }) catch break;
+        var at: i64 = 0;
+        if (l.kv.get(arena, sync_at_key) catch null) |v| at = std.fmt.parseInt(i64, v, 10) catch 0;
+        return .{ .hotkey = @tagName(l.choice), .suggest = l.s.suggest_on, .at = at, .launches = list.items };
+    }
+
+    /// The account's settings, merged: the key, the suggestions, the counts.
+    fn applySynced(ctx: *anyopaque, st: Settings) void {
+        const l: *Live = @ptrCast(@alignCast(ctx));
+        var at: [24]u8 = undefined;
+        l.kv.set(sync_at_key, std.fmt.bufPrint(&at, "{d}", .{st.at}) catch "0") catch {};
+        if (std.meta.stringToEnum(shortcut.Choice, st.hotkey)) |c| if (c != l.choice) {
+            shortcut.save(l.kv, c);
+            l.useKey(c);
+        };
+        if (st.suggest != l.s.suggest_on) {
+            l.s.suggest_on = st.suggest;
+            l.kv.set(suggest_key, if (st.suggest) "1" else "0") catch {};
+        }
+        const ix = l.s.index;
+        for (st.launches) |la| if (ix.find(la.name)) |i| {
+            ix.launches.items[i] = @max(ix.launches.items[i], la.count);
+        };
+        ix.save(l.kv);
+        l.s.built = 1;
+        l.menu();
+        if (l.window) |w| w.redraw();
+    }
+
+    fn accountChanged(ctx: *anyopaque) void {
+        menu(@ptrCast(@alignCast(ctx)));
+    }
+
+    /// This Mac chose its key or turned suggestions on or off, just now.
+    fn touched(l: *Live) void {
+        var at: [24]u8 = undefined;
+        l.kv.set(sync_at_key, std.fmt.bufPrint(&at, "{d}", .{account.now()}) catch "0") catch {};
+        if (l.acct) |*a| a.changed();
+    }
+
+    fn accountClick(l: *Live, _: *nanoui.menu.Item) void {
+        const a = if (l.acct) |*x| x else return;
+        switch (a.state) {
+            .signed_out => a.signIn(),
+            .starting => {},
+            .waiting, .signed_in => a.signOut(),
+        }
+    }
+
+    fn openTerms(_: *Live, _: *nanoui.menu.Item) void {
+        _ = nanoui.shell.openUrl(account.terms_url);
+    }
+
+    /// The menu's account row: what signing in does, or who is synced.
+    fn accountItems(l: *Live) [2]nanoui.menu.MenuItem {
+        const a = if (l.acct) |*x| x else return .{ .{ .label = "Sync Across Macs…", .disabled = true }, .separator };
+        const who: []const u8 = if (a.email().len > 0) a.email() else "your Codegraff account";
+        return switch (a.state) {
+            .signed_out => .{ .{ .label = "Sign In with Codegraff to Sync Across Macs…", .click = .of(l, Live.accountClick) }, .{ .label = "Codegraff Terms & Privacy", .click = .of(l, Live.openTerms) } },
+            .starting => .{ .{ .label = "Signing In…", .disabled = true }, .{ .label = "Codegraff Terms & Privacy", .click = .of(l, Live.openTerms) } },
+            .waiting => .{ .{ .label = "Approve in Your Browser… (Click to Cancel)", .click = .of(l, Live.accountClick) }, .{ .label = "Codegraff Terms & Privacy", .click = .of(l, Live.openTerms) } },
+            .signed_in => .{
+                .{ .label = std.fmt.bufPrint(&l.account_label, "Synced as {s}", .{who}) catch "Synced", .disabled = true },
+                .{ .label = "Sign Out of Codegraff", .click = .of(l, Live.accountClick) },
+            },
+        };
     }
 
     /// Google is asked once typing pauses (`suggest.pause_ms`).
@@ -134,6 +224,7 @@ const Live = struct {
     fn toggleSuggest(l: *Live, item: *nanoui.menu.Item) void {
         l.s.suggest_on = item.checked;
         l.kv.set(suggest_key, if (item.checked) "1" else "0") catch {};
+        l.touched();
         // The rows again, with or without them.
         l.s.built = 1;
         if (l.window) |w| w.redraw();
@@ -144,10 +235,14 @@ const Live = struct {
         const t = l.tray orelse return;
         const ready = if (l.updater) |u| u.ready() else null;
         const label = if (ready) |v| std.fmt.bufPrint(&l.update_label, "Restart to Update to {s}", .{v}) catch "Restart to Update" else "Check for Updates";
+        const acc = l.accountItems();
         t.setMenu("Nanolight", &.{
             .{ .label = "Open Nanolight", .click = .of(l, Live.menuShow) },
             .{ .label = "Welcome…", .click = .of(l, Live.welcome) },
             .{ .label = "Google Suggestions", .kind = .checkbox, .checked = l.s.suggest_on, .click = .of(l, Live.toggleSuggest) },
+            .separator,
+            acc[0],
+            acc[1],
             .separator,
             .{ .label = label, .disabled = l.updater == null, .click = .of(l, Live.updateNow) },
             .{ .label = "Quit Nanolight", .role = .quit },
@@ -239,6 +334,7 @@ const Live = struct {
         l.s.reveal();
         w.show();
         l.through.start();
+        if (l.acct) |*a| a.maybePull();
         w.redraw();
     }
 
@@ -256,6 +352,7 @@ const Live = struct {
         const l: *Live = @ptrCast(@alignCast(ctx));
         shortcut.save(l.kv, choice);
         l.useKey(choice);
+        l.touched();
     }
 
     fn fix(ctx: *anyopaque, clash: shortcut.Clash) void {
@@ -419,6 +516,9 @@ pub fn main(init: std.process.Init) !void {
     if (updater) |u| if (u.phase.load(.acquire) != .off) {
         live.updater = u;
     };
+    // Signed in before: synced now. Signing in is from the menu.
+    live.acct = .{ .gpa = init.gpa, .kv = kv, .hooks = live.accountHooks() };
+    live.acct.?.load();
     live.menu();
     // Restarted by an automatic update: quietly, the panel saying so the
     // next time it opens. Otherwise launching shows the panel.

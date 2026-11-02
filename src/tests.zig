@@ -14,6 +14,7 @@ test {
     _ = @import("promo_camera.zig");
     _ = @import("single.zig");
     _ = @import("clickthrough.zig");
+    _ = @import("settings.zig");
     _ = @import("apps.zig");
     _ = @import("hotkey.zig");
     _ = @import("shortcut.zig");

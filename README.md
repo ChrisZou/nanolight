@@ -19,6 +19,18 @@ Apps, math, Google, Grok and X: one keystroke away. Native Zig, no Electron, abo
 - **⌘1–⌘9** run a row at once; ↑ ↓ and ⌃N ⌃P move.
 - Lives in the menu bar: no Dock icon, and nothing drawn while it's idle.
 
+## Sync across Macs (optional)
+
+Off until you turn it on: choose **Sign In with Codegraff to Sync Across Macs…** in the menu bar icon's menu. Your browser opens codegraff.com to approve the sign-in, and from then on every Mac signed in to the same account shares:
+
+- the key that opens Nanolight,
+- whether Google suggestions are on,
+- how often you open each app, so an empty panel suggests the same apps everywhere.
+
+Two Macs merge rather than overwrite: the key and the suggestions setting follow whichever Mac changed them last, and each app keeps its higher count. Nothing else is sent: no queries, no history, no files. The sign-in key is kept in your Keychain, and **Sign Out of Codegraff** revokes it.
+
+Syncing goes through your Codegraff account, so [Codegraff's terms](https://codegraff.com/terms) and [privacy policy](https://codegraff.com/privacy) apply to it. New accounts made by signing in from Nanolight get $2 of Codegraff credit.
+
 ## Install
 
 Download `nanolight-macos-arm64.dmg` from the [latest release](https://github.com/justrach/nanolight/releases/latest), open it and drag Nanolight to Applications. macOS 14 or later, Apple silicon.
