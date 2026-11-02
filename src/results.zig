@@ -15,6 +15,8 @@ pub const Kind = enum {
     app,
     /// A Picemon image hit (`Row.pic`).
     pic,
+    /// An FSearch file hit (`Row.file`).
+    file,
     /// Ask Codex (`ai ` / `ask `).
     ai_ask,
     /// Codex's answer (Return copies it).
@@ -32,6 +34,7 @@ pub const Kind = enum {
             .calc => "Calculator",
             .app => "Application",
             .pic => "Image",
+            .file => "File",
             .ai_ask, .ai_answer => "AI",
             .ask_grok, .search_x, .search_web, .suggest => "Web",
         };
@@ -44,6 +47,7 @@ pub const Kind = enum {
             .calc => "Copy Answer",
             .app => "Open Application",
             .pic => "Open Image",
+            .file => "Open File",
             .ai_ask => "Ask Codex",
             .ai_answer => "Copy Answer",
             .ask_grok => "Ask Grok",
@@ -58,6 +62,7 @@ pub const Kind = enum {
             .calc => "Calculator",
             .app => if (suggested) "Suggestions" else "Applications",
             .pic => "Images",
+            .file => "Files",
             .ai_ask, .ai_answer => "AI",
             .search_web, .suggest => "Google",
             .ask_grok, .search_x => "Ask & Search",
@@ -73,6 +78,8 @@ pub const Row = struct {
     web: u8 = 0,
     /// Which Picemon hit (`.pic`).
     pic: u8 = 0,
+    /// Which FSearch hit (`.file`).
+    file: u8 = 0,
     /// Which of its name's bytes the query matched.
     match: search.Match = .{ .score = 0 },
 };
@@ -147,6 +154,15 @@ pub const Results = struct {
         for (0..@min(n, max_rows)) |i| r.push(.{ .kind = .pic, .pic = @intCast(i) });
     }
 
+    /// FSearch hits only (from `f ` / `find ` / `file `).
+    pub fn buildFile(r: *Results, n: usize) void {
+        r.n = 0;
+        r.suggested = false;
+        r.answer = "";
+        r.hex = "";
+        for (0..@min(n, max_rows)) |i| r.push(.{ .kind = .file, .file = @intCast(i) });
+    }
+
     /// Codex Q&A rows (from `ai ` / `ask `). `answered` picks the copy row.
     pub fn buildAi(r: *Results, answered: bool) void {
         r.n = 0;
@@ -176,7 +192,7 @@ pub fn url(buf: []u8, kind: Kind, query: []const u8) []const u8 {
         .ask_grok => "https://grok.com/?q=",
         .search_x => "https://x.com/search?f=live&q=",
         .search_web, .suggest => "https://www.google.com/search?q=",
-        .calc, .app, .clipboard, .pic, .ai_ask, .ai_answer => return "",
+        .calc, .app, .clipboard, .pic, .file, .ai_ask, .ai_answer => return "",
     };
     var w: std.Io.Writer = .fixed(buf);
     w.writeAll(base) catch return "";

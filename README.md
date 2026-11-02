@@ -17,6 +17,7 @@ Apps, math, Google, Grok and X: one keystroke away. Native Zig, no Electron, abo
 - **Results in the panel**: Return on a search shows Google's page in the panel itself. Esc goes back to the list, ⌘↩ opens it in your browser, ⌘[ goes back a page.
 - **Ask Grok, search X**, a row away.
 - **Images via Picemon**: type `img ` or `pic ` plus a keyword. Picemon has no public CLI/URL scheme yet, so Nanolight queries its local SQLite index (`~/Library/Application Support/Picemon/picemon.db`) for OCR / description / tags / path. Return opens the file.
+- **Files via FSearch**: type `f `, `find `, or `file ` plus a name. Uses the installed [`fsearch`](https://github.com/noahdunnagan/fsearch) CLI/daemon (`~/.local/bin/fsearch`); Return opens the path.
 - **Ask Codex**: type `ai ` or `ask ` plus a question, Return to run a one-shot `codex exec`. Return on the answer copies it.
 - **⌘1–⌘9** run a row at once; ↑ ↓ and ⌃N ⌃P move.
 - Lives in the menu bar: no Dock icon, and nothing drawn while it's idle.
@@ -71,6 +72,7 @@ VERSION=0.1.0 sh macos/package.sh   # the release: signed app, disk image, updat
 | `src/calc.zig` | The calculator |
 | `src/suggest.zig` | Google's completions: the privacy guard, decoding, the cache (after [browse](https://github.com/justrach/browse)) |
 | `src/pic.zig` | Picemon image search over its SQLite index |
+| `src/file.zig` | FSearch whole-disk file search (`f ` / `find ` / `file `) |
 | `src/ai.zig` | One-shot Codex Q&A (`ai ` / `ask `) |
 | `src/preview.zig` | The results page in the panel (WKWebView) |
 | `src/onboard.zig`, `src/shortcut.zig` | The welcome, and which key is free |

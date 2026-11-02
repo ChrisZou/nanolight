@@ -12,6 +12,7 @@ test {
     _ = @import("results.zig");
     _ = @import("suggest.zig");
     _ = @import("pic.zig");
+    _ = @import("file.zig");
     _ = @import("ai.zig");
     _ = @import("promo_camera.zig");
     _ = @import("single.zig");
@@ -508,7 +509,7 @@ test "the panel never outgrows its window, which is never resized" {
 }
 
 
-test "img and ai prefixes list their own rows" {
+test "img, file and ai prefixes list their own rows" {
     const gpa = std.testing.allocator;
     var ix: Index = .init(gpa);
     defer ix.deinit();
@@ -520,6 +521,11 @@ test "img and ai prefixes list their own rows" {
     s.rebuild();
     try std.testing.expectEqual(results.Kind.pic, s.res.rows[0].kind);
     try std.testing.expectEqualStrings("demo.png", s.pics.get(0).name());
+    s.files.push("/Users/chris/code/ai/nanolight/README.md", false);
+    s.query.set("find README");
+    s.rebuild();
+    try std.testing.expectEqual(results.Kind.file, s.res.rows[0].kind);
+    try std.testing.expectEqualStrings("README.md", s.files.get(0).name());
     s.ai_status = .ready;
     s.query.set("ai what is zig");
     s.rebuild();

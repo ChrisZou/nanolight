@@ -79,7 +79,7 @@ const Live = struct {
     ai_job: ?*AiJob = null,
 
     fn host(l: *Live) view.Host {
-        return .{ .ctx = l, .open = open, .hide = hide, .resize = resize, .suggest = ask, .preview = showPage, .pic = picSearch, .ai = aiAsk };
+        return .{ .ctx = l, .open = open, .hide = hide, .resize = resize, .suggest = ask, .preview = showPage, .pic = picSearch, .file = fileSearch, .ai = aiAsk };
     }
 
     fn open(ctx: *anyopaque, target: []const u8) void {
@@ -216,6 +216,11 @@ const Live = struct {
     fn picSearch(ctx: *anyopaque, query: []const u8, out: *@import("pic.zig").List) void {
         const l: *Live = @ptrCast(@alignCast(ctx));
         @import("pic.zig").search(l.app.gpa, l.app.io, l.home, query, out);
+    }
+
+    fn fileSearch(ctx: *anyopaque, query: []const u8, out: *@import("file.zig").List) void {
+        const l: *Live = @ptrCast(@alignCast(ctx));
+        @import("file.zig").search(l.app.gpa, l.app.io, l.home, query, out);
     }
 
     fn aiAsk(ctx: *anyopaque, question: []const u8) void {

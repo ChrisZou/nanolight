@@ -28,6 +28,8 @@ pub const Host = struct {
     preview: ?*const fn (ctx: *anyopaque, url: ?[]const u8) void = null,
     /// Picemon keyword search into `out` (from `img ` / `pic `).
     pic: ?*const fn (ctx: *anyopaque, query: []const u8, out: *@import("pic.zig").List) void = null,
+    /// FSearch file search into `out` (from `f ` / `find ` / `file `).
+    file: ?*const fn (ctx: *anyopaque, query: []const u8, out: *@import("file.zig").List) void = null,
     /// Start a Codex one-shot; the answer lands in `Nanolight.aiDone`.
     ai: ?*const fn (ctx: *anyopaque, question: []const u8) void = null,
 };
@@ -126,6 +128,8 @@ pub const Nanolight = struct {
     preview_url: []const u8 = "",
     /// Picemon hits for the current `img `/`pic ` query.
     pics: @import("pic.zig").List = .{},
+    /// FSearch hits for the current `f `/`find `/`file ` query.
+    files: @import("file.zig").List = .{},
     /// Codex Q&A (`ai `/`ask `).
     ai_status: @import("ai.zig").Status = .ready,
     ai_question: [@import("ai.zig").max_question]u8 = undefined,
@@ -341,6 +345,20 @@ pub const Nanolight = struct {
             s.sel = 0;
             return;
         }
+        if (@import("file.zig").take(q)) |needle| {
+            if (needle.len == 0) {
+                s.files.clear();
+            } else if (s.host) |host| {
+                if (host.file) |ask| {
+                    s.files.clear();
+                    ask(host.ctx, needle, &s.files);
+                }
+                // No file hook (tests): keep whatever hits were already set.
+            }
+            s.res.buildFile(s.files.n);
+            s.sel = 0;
+            return;
+        }
         if (@import("ai.zig").take(q)) |question| {
             const same = question.len == s.ai_question_len and std.mem.eql(u8, question, s.ai_question[0..s.ai_question_len]);
             if (!same) {
@@ -400,6 +418,8 @@ pub const Nanolight = struct {
         for (s.res.slice(), 0..) |now, i| {
             const same_row = now.kind == r.kind and switch (r.kind) {
                 .app => now.app == r.app,
+                .pic => now.pic == r.pic,
+                .file => now.file == r.file,
                 .suggest => suggest.same(s.web.get(now.web), was_text[0..was_len]),
                 else => true,
             };
@@ -474,6 +494,11 @@ pub const Nanolight = struct {
                 ui.text(c, hit.name(), .{ .size = 13.5, .weight = .medium, .color = p.text, .truncate = .ellipsis });
                 ui.text(c, hit.folder(), .{ .size = 12, .color = p.sub.alpha(0.8), .truncate = .ellipsis });
             },
+            .file => {
+                const hit = s.files.get(r.file);
+                ui.text(c, hit.name(), .{ .size = 13.5, .weight = .medium, .color = p.text, .truncate = .ellipsis });
+                ui.text(c, hit.folder(), .{ .size = 12, .color = p.sub.alpha(0.8), .truncate = .ellipsis });
+            },
             .ai_ask => {
                 if (s.ai_status == .waiting) {
                     ui.text(c, "Thinking…", .{ .size = 13.5, .weight = .medium, .color = p.text });
@@ -503,7 +528,7 @@ pub const Nanolight = struct {
         }
         ui.spacer(c);
         if (i == s.sel) {
-            ui.text(c, if (r.kind == .app or r.kind == .pic) "Open" else if (r.kind == .ai_answer) "Copy" else if (r.kind == .ai_ask) "Ask" else "Go", .{ .size = 12, .weight = .medium, .color = p.sub });
+            ui.text(c, if (r.kind == .app or r.kind == .pic or r.kind == .file) "Open" else if (r.kind == .ai_answer) "Copy" else if (r.kind == .ai_ask) "Ask" else "Go", .{ .size = 12, .weight = .medium, .color = p.sub });
             ui.kbd(c, "↩");
         } else if (i < 9) ui.textf(c, .{ .size = 12, .weight = .medium, .color = p.sub.alpha(0.5), .tabular = true }, "⌘{d}", .{i + 1});
     }
@@ -579,6 +604,7 @@ pub const Nanolight = struct {
             .clipboard => "clipboard",
             .calc => "plus.forwardslash.minus",
             .pic => "photo",
+            .file => "doc",
             .ai_ask, .ai_answer => "sparkles",
             .ask_grok => "sparkles",
             .search_web => "globe",
@@ -652,6 +678,7 @@ pub const Nanolight = struct {
                 s.go(s.index.apps.items[r.app].path);
             },
             .pic => s.go(s.pics.get(r.pic).slice()),
+            .file => s.go(s.files.get(r.file).slice()),
             .ai_ask => {
                 if (s.ai_status == .waiting or s.ai_question_len == 0) return;
                 if (s.host) |host| {
