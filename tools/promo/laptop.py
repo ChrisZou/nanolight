@@ -145,8 +145,10 @@ track.up_axis = "UP_Y"
 fill = (hi.x - lo.x) / 2 / math.tan(math.atan(18 / cd.lens)) * 1.02
 close = centre + normal * fill
 keys = {
+    # Round from the side, slowing as the display turns to face the lens
+    # (Rotato's rule), then through to it.
     "in": [(1, (0.66, -0.62, 0.09), (0, 0.02, 0.05)),
-           (48, (0.2, -0.56, 0.24), (0, 0.07, 0.09)),
+           (round(count * 0.45), (0.2, -0.56, 0.24), (0, 0.07, 0.09)),
            (count, tuple(close), tuple(centre))],
     "out": [(1, tuple(close), tuple(centre)),
             (count, (-0.52, -0.62, 0.3), (0, 0.04, 0.07))],
@@ -159,7 +161,7 @@ for f, at, aim in keys:
 
 scene.frame_start = 1
 scene.frame_end = count
-scene.render.fps = 30
+scene.render.fps = 60
 scene.render.resolution_x = 1920
 scene.render.resolution_y = 1080
 scene.render.resolution_percentage = 100
