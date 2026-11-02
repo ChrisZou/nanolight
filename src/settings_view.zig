@@ -13,6 +13,7 @@ const account = @import("account.zig");
 const SettingsHost = @import("settings_host.zig").SettingsHost;
 const Choice = shortcut.Choice;
 const Palette = panel.Palette;
+const mac = @import("builtin").os.tag == .macos;
 
 const RowKind = enum { choice, suggest, login, sync, terms, updates, welcome, quit };
 
@@ -96,9 +97,9 @@ pub const Settings = struct {
         s.choices(c, n, p);
         label(c, p, "Search");
         s.switchRow(c, n, p, rows, .suggest, "Google Suggestions");
-        label(c, p, "This Mac");
+        label(c, p, "This " ++ @import("results.zig").machine);
         s.switchRow(c, n, p, rows, .login, "Open at Login");
-        label(c, p, "Sync Across Macs");
+        label(c, p, if (@import("builtin").os.tag == .macos) "Sync Across Macs" else "Sync Across Computers");
         s.sync(c, n, p, rows);
         label(c, p, "Updates");
         s.updates(c, n, p, rows);
@@ -122,7 +123,9 @@ pub const Settings = struct {
             if (b.clicked()) s.pick(n, ch);
             ui.text(c, c.print("{f}", .{ch}), .{ .size = 13.5, .weight = if (on) .semibold else .medium, .color = if (on) p.text else p.sub });
         }
-        // One's own: the key recorded, or a press away.
+        // One's own: the key recorded, or a press away (on the Mac, where
+        // Carbon takes any key; a PC keeps to the four).
+        if (!mac) return;
         ui.key(c, "key-own");
         const on = s.recording or (s.custom != null and s.custom.?.eql(s.choice));
         const b = ui.div(c).row().h(36).px(14).gap(6).itemsCenter().rounded(10).control()
@@ -279,6 +282,19 @@ pub const Settings = struct {
     }
 
     /// Return, as a key or as the field's newline command.
+    /// Settings in place of the rows, the panel's height following them.
+    pub fn inPanel(s: *Settings, c: *ui.Context, n: *panel.Nanolight, p: Palette) void {
+        // Return is the field's command, or a key. One event, one act.
+        if (s.returned(c) and !s.took_return) {
+            s.took_return = true;
+            s.activateSelected(n);
+        }
+        const h = n.follow(c, height);
+        const box = ui.div(c).column().wFull().h(h).clip();
+        defer box.end();
+        s.view(c, n, p);
+    }
+
     pub fn returned(s: *Settings, c: *ui.Context) bool {
         _ = s;
         if (c.input.key == .enter) return true;
@@ -303,7 +319,7 @@ pub const Settings = struct {
         const h = s.hooks(n);
         switch (kind) {
             // ←/→ step through the four; Return records one's own.
-            .choice => s.record(n, !s.recording),
+            .choice => if (mac) s.record(n, !s.recording) else s.nudge(n, rowList(s.account), 1),
             .suggest, .login => s.flip(n, kind),
             .sync => if (h) |host| switch (s.account) {
                 .signed_out => host.sign_in(host.ctx),

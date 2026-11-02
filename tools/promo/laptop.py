@@ -1,6 +1,8 @@
 """The promo's laptop shots, in Blender: Apple's MacBook Air (its AR model
 from apple.com, fetched by tools/promo.sh, never kept in the repository)
-with the promo's own frames on its display, on a dark glossy floor.
+with the promo's own frames on its display, on a dark glossy floor. The
+Windows and Linux shots use Dell's XPS 13 (DX13260) AR model from dell.com
+the same way.
 
     blender -b --factory-startup --python tools/promo/laptop.py -- \
         <model.usdz> <screen frames dir> <out dir> <in|out> <frames>
@@ -25,12 +27,17 @@ scene = bpy.context.scene
 
 
 def feeds_emission(mat):
-    """Whether an image texture lights the material (the display's)."""
+    """Whether the material is a display's: an image texture lights it
+    (Apple's), or it is textured and named for the screen (Dell's, whose
+    picture is its base colour)."""
     if not mat or not mat.node_tree:
         return False
+    textured = any(x.type == "TEX_IMAGE" for x in mat.node_tree.nodes)
+    if textured and "screen" in mat.name.lower():
+        return True
     for n in mat.node_tree.nodes:
         if n.type == "BSDF_PRINCIPLED" and n.inputs["Emission Color"].is_linked:
-            return any(x.type == "TEX_IMAGE" for x in mat.node_tree.nodes)
+            return textured
     return False
 
 
@@ -88,8 +95,10 @@ nt.links.new(tex.outputs["Color"], bsdf.inputs["Emission Color"])
 nt.links.new(bsdf.outputs["BSDF"], out.inputs["Surface"])
 display.material_slots[0].material = mat
 
-# A dark floor that reflects, a key, a cool rim and a warm kicker.
-bpy.ops.mesh.primitive_plane_add(size=8, location=(0, 0, -0.0075))
+# A dark floor that reflects, under the laptop's feet, a key, a cool rim
+# and a warm kicker.
+bottom = min(world_box(o)[0].z for o in bpy.data.objects if o.type == "MESH")
+bpy.ops.mesh.primitive_plane_add(size=8, location=(0, 0, bottom))
 floor = bpy.context.object
 fm = bpy.data.materials.new("Floor")
 fb = fm.node_tree.nodes["Principled BSDF"]

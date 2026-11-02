@@ -1,18 +1,21 @@
 # The promo
 
-[promo.mp4](promo.mp4) is 30 seconds, 1920 × 1080 at 60 fps. [promo-preview.gif](promo-preview.gif) is the same video, silent and smaller. `tools/promo.sh` makes both in a few minutes.
+[promo.mp4](promo.mp4) is 47 seconds, 1920 × 1080 at 60 fps. [promo-preview.gif](promo-preview.gif) is the same video, silent and smaller. `tools/promo.sh` makes both in a few minutes, once the Windows and Linux recordings are in `zig-out/promo` (below).
 
 | Time | Shot |
 | --- | --- |
 | 0:00 | A MacBook Air, the camera coming round to face it; ⌘Space opens the panel on its display, and the camera pushes in until the display fills the frame |
 | 0:03 | The panel fills the frame: "saf" finds Safari, → takes the rest |
-| 0:05 | Initials (`ss`), then a typo (`chorme`) |
-| 0:09 | Math, the answer lifted by a loupe, ↩ copies it |
-| 0:12 | "liquid gl": Google's suggestions arrive, the faint completion is lifted, Tab takes it |
-| 0:16 | Google's results, right in the panel |
-| 0:19 | Ask Grok, search X |
-| 0:22 | Back to rest |
-| 0:24 | The panel's rectangle becomes the icon beside the name; "Opens with ⌘ Space" |
+| 0:05 | Math, the answer lifted by a loupe, ↩ copies it |
+| 0:08 | "liquid gl": Google's suggestions arrive, the faint completion is lifted, Tab takes it |
+| 0:11 | Google's results, right in the panel |
+| 0:15 | ⌘, opens Settings in the panel |
+| 0:18 | "hacker": a Raycast extension (Hacker News) runs in the panel; ⌘K shows its actions |
+| 0:23 | "system": a Raycast script command, run by Nanolight itself, its output in the panel |
+| 0:26 | The pivot: the MacBook pulls back, the camera pans across to a Dell XPS 13 showing Windows |
+| 0:30 | "Now on Windows": the System Info script command on Windows |
+| 0:34 | "And Linux": Hacker News on Linux (Xfce) |
+| 0:42 | The panel's rectangle becomes the icon beside the name; "Mac · Windows · Linux" |
 
 ## How it's shot
 
@@ -32,9 +35,11 @@ Before this cut, a research pass (grok-4.7, through graff) looked at what makes 
 - **The apps listed** are Apple's own plus Google Chrome (`apps` in `src/promo.zig`), so they're the same on any Mac.
 - **Google's suggestions** are what `suggestqueries.google.com` returned for "liquid gl" and "liquid glass" on 2 November 2026, decoded by the app's own `suggest.zig`. They show 0.3 s after typing pauses.
 - **The results page** is Google's page for "liquid glass apple", loaded in an offscreen WebKit view with a Safari user agent as the panel's preview does (`tools/promo/serp.swift`), and placed where the panel shows it.
+- **Hacker News** is what its extension (raycast/extensions) rendered through Nanolight's host on 3 November 2026, its first nine stories (`src/promo_hn.json`), drawn by the app's own `raycast_view.zig`. The **System Info** output is what that script command printed on the Mac that made the video (`src/promo_sysinfo.txt`).
+- **The Windows and Linux shots are screen recordings** of the real app (a release build of this code) on a Windows Server 2025 desktop and a Debian 13 (Xfce) desktop, in Daytona's sandboxes, recorded by their own screen recorder at 1024 × 768 and 30 fps while a script pressed the keys. They are put in `zig-out/promo` as `rec-win.mp4` and `rec-linux.mp4` and aren't stored in this repository. The video shows them cropped to the panel, 1.5× and 1.3× as fast as they were typed. The hotkey there is Ctrl Space, since the window manager holds Alt Space.
 
 ## What is made for the video
 
-- **The laptop** is Apple's MacBook Air (13-inch, midnight) AR model from apple.com, rendered in Blender (`tools/promo/laptop.py`) with the promo's frames on its display. The desktop wallpaper is the one baked into that model. The model is downloaded when the script runs and isn't stored in this repository.
-- **The camera moves, loupes, labels and end card** are added for the video.
+- **The laptops** are Apple's MacBook Air (13-inch, midnight) AR model from apple.com and Dell's XPS 13 (DX13260) AR model from dell.com, rendered in Blender (`tools/promo/laptop.py`). The MacBook's display shows the promo's frames, the XPS's the Windows recording. The Mac's desktop wallpaper is the one baked into Apple's model. The models are downloaded when the script runs and aren't stored in this repository.
+- **The camera moves, the pan between the laptops, loupes, labels and end card** are added for the video. The labels over the recordings are drawn by `tools/promo/caption.swift`.
 - **The music and sound effects** are synthesised with ffmpeg in `tools/promo.sh`.

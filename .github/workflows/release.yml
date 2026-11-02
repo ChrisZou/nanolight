@@ -1,6 +1,7 @@
-# Builds Nanolight for macOS (Apple silicon) and attaches it, with the update
-# feed the app's updater reads (manifest.json, the zip's sha256), to the
-# GitHub release of the tag that was pushed.
+# Builds Nanolight for macOS (Apple silicon), Windows and Linux (x86_64 and
+# arm64, cross-compiled here) and attaches them, with the update feed the
+# app's updater reads (manifest.json, each archive's sha256), to the GitHub
+# release of the tag that was pushed.
 #
 # Signing and notarization use these repository secrets, the same names as
 # nanoterm's and Harness's. With all five, the app and image are signed with
@@ -74,6 +75,12 @@ jobs:
           case "$GITHUB_REF" in refs/tags/*) ;; *) version="0.0.0-${GITHUB_SHA::7}" ;; esac
           VERSION="$version" sh macos/package.sh
 
+      - name: Windows and Linux
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          case "$GITHUB_REF" in refs/tags/*) ;; *) version="0.0.0-${GITHUB_SHA::7}" ;; esac
+          VERSION="$version" sh pc/package.sh
+
       - name: Check
         run: |
           codesign --verify --strict --verbose=2 zig-out/package/Nanolight.app
@@ -90,6 +97,10 @@ jobs:
             zig-out/package/nanolight-macos-arm64.dmg
             zig-out/package/nanolight-macos-arm64.dmg.sha256
             zig-out/package/nanolight-macos-arm64.zip
+            zig-out/package/nanolight-windows-x86_64.zip
+            zig-out/package/nanolight-linux-x86_64.tar.gz
+            zig-out/package/nanolight-linux-aarch64.tar.gz
+            zig-out/package/*.sha256
             zig-out/package/manifest.json
 
       - name: Attach to the release
@@ -99,5 +110,8 @@ jobs:
         run: |
           tag="$GITHUB_REF_NAME"
           cd zig-out/package
-          gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" --title "Nanolight ${tag#v}" --notes "Nanolight ${tag#v} for macOS 14 and later (Apple silicon). Open the disk image and drag Nanolight to Applications."
-          gh release upload "$tag" nanolight-macos-arm64.dmg nanolight-macos-arm64.dmg.sha256 nanolight-macos-arm64.zip manifest.json --clobber
+          gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" --title "Nanolight ${tag#v}" --notes "Nanolight ${tag#v} for macOS 14 and later (Apple silicon: open the disk image and drag Nanolight to Applications), Windows 10 and later (x86_64: unzip and run nanolight.exe) and Linux (x86_64, arm64; X11, GTK 3: unpack and run nanolight)."
+          gh release upload "$tag" nanolight-macos-arm64.dmg nanolight-macos-arm64.dmg.sha256 nanolight-macos-arm64.zip \
+            nanolight-windows-x86_64.zip nanolight-linux-x86_64.tar.gz nanolight-linux-aarch64.tar.gz \
+            nanolight-windows-x86_64.zip.sha256 nanolight-linux-x86_64.tar.gz.sha256 nanolight-linux-aarch64.tar.gz.sha256 \
+            manifest.json --clobber

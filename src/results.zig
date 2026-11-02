@@ -8,6 +8,12 @@
 const std = @import("std");
 const search = @import("search.zig");
 const calc = @import("calc.zig");
+const mac = @import("builtin").os.tag == .macos;
+
+/// The key held for the panel's shortcuts (⌘1, ⌘↩, ⌘,): Ctrl on a PC.
+pub const mod = if (mac) "⌘" else "Ctrl+";
+/// What the panel calls the computer it runs on.
+pub const machine = if (mac) "Mac" else "PC";
 
 pub const Kind = enum {
     calc,

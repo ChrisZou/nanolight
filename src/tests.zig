@@ -12,13 +12,31 @@ test {
     _ = @import("results.zig");
     _ = @import("suggest.zig");
     _ = @import("promo_camera.zig");
-    _ = @import("single.zig");
-    _ = @import("clickthrough.zig");
     _ = @import("settings.zig");
     _ = @import("apps.zig");
-    _ = @import("hotkey.zig");
     _ = @import("shortcut.zig");
-    _ = @import("recorder.zig");
+    _ = @import("raycast_model.zig");
+    _ = @import("raycast.zig");
+    _ = @import("raycast_view.zig");
+    _ = @import("script_commands.zig");
+    _ = @import("script_run.zig");
+    _ = @import("tests_ext.zig");
+    switch (@import("builtin").os.tag) {
+        .macos => {
+            _ = @import("single_mac.zig");
+            _ = @import("clickthrough.zig");
+            _ = @import("hotkey_mac.zig");
+            _ = @import("recorder.zig");
+        },
+        .windows => {
+            _ = @import("apps_win.zig");
+            _ = @import("hotkey_win.zig");
+        },
+        else => {
+            _ = @import("apps_linux.zig");
+            _ = @import("hotkey_x11.zig");
+        },
+    }
 }
 
 const Probe = struct {
@@ -37,6 +55,9 @@ const Probe = struct {
     }
 };
 
+/// The Mac's starters, which these tests' apps are named after.
+const mac_starters = [_][]const u8{ "Safari", "Notes", "Calendar", "System Settings", "Finder" };
+
 fn press(t: *ui.Tester, ops: []const ui.TextOp) void {
     t.textOps(ops);
     t.settle(1);
@@ -46,6 +67,7 @@ test "the panel finds, moves, answers and hands off" {
     const gpa = std.testing.allocator;
     var ix: Index = .init(gpa);
     defer ix.deinit();
+    ix.starters = &mac_starters;
     for ([_][]const u8{ "Safari", "System Settings", "Notes", "Calculator", "Finder" }) |n| {
         var buf: [64]u8 = undefined;
         try ix.add(n, try std.fmt.bufPrint(&buf, "/Applications/{s}.app", .{n}));
@@ -91,7 +113,7 @@ test "the panel finds, moves, answers and hands off" {
     // ⌘2 opens the second row at once: Safari, under System Settings,
     // which was just opened.
     press(&t, &.{ .{ .command = .select_all }, .{ .command = .delete_backward }, .{ .insert = "s" } });
-    try std.testing.expect(t.hasText("⌘2"));
+    try std.testing.expect(t.hasText(results.mod ++ "2"));
     try std.testing.expect(t.shortcut(.{ .key = '2', .cmd = true }));
     try std.testing.expectEqualStrings("/Applications/Safari.app", probe.opened[0..probe.opened_len]);
 
@@ -161,6 +183,7 @@ test "Google's completions land below, and a search shows in the panel" {
     const gpa = std.testing.allocator;
     var ix: Index = .init(gpa);
     defer ix.deinit();
+    ix.starters = &mac_starters;
     try ix.add("Safari", "/Applications/Safari.app");
     var web: Web = .{};
     var s: view.Nanolight = .{ .index = &ix };
@@ -202,7 +225,7 @@ test "Google's completions land below, and a search shows in the panel" {
     try std.testing.expectEqual(results.Kind.suggest, s.res.rows[1].kind);
     try std.testing.expectEqual(results.Kind.search_web, s.res.rows[s.sel].kind);
     // ⌘2 is Google's first completion.
-    try std.testing.expect(t.hasText("⌘2"));
+    try std.testing.expect(t.hasText(results.mod ++ "2"));
     // One more letter: the answer so far stands in, and nothing is asked
     // again for words already answered.
     web.asked_len = 0;
@@ -269,9 +292,12 @@ const Steps = struct {
 };
 
 test "the welcome: a key, pressed for real, then a first search" {
+    // Its keys and clashes are the Mac's (macOS's own shortcuts).
+    if (@import("builtin").os.tag != .macos) return error.SkipZigTest;
     const gpa = std.testing.allocator;
     var ix: Index = .init(gpa);
     defer ix.deinit();
+    ix.starters = &mac_starters;
     try ix.add("Safari", "/Applications/Safari.app");
     var o: onboard.Onboard = .{};
     // Hooks only once started: the system's shortcuts are not read in tests.
@@ -399,6 +425,7 @@ test "settings opens from ⌘,, from typing, and from the gear" {
     const gpa = std.testing.allocator;
     var ix: Index = .init(gpa);
     defer ix.deinit();
+    ix.starters = &mac_starters;
     try ix.add("Safari", "/Applications/Safari.app");
     var prefs: Prefs = .{};
     prefs.init();
@@ -445,25 +472,28 @@ test "settings opens from ⌘,, from typing, and from the gear" {
     try std.testing.expect(t.shortcut(.{ .key = ui.Shortcut.right }));
     try std.testing.expectEqual(shortcut.Choice.opt_space, prefs.applied.?);
 
-    // Return on it records a key of one's own (issue #1): a letter alone
-    // is refused, ⌥X is taken, kept, and shown as the chosen one.
-    press(&t, &.{.{ .command = .insert_newline }});
-    t.settle(1);
-    try std.testing.expect(prefs.recording and t.hasText("Type a shortcut"));
-    s.settings_ui.took(&s, shortcut.recorded(7, 0, 'x'));
-    t.settle(1);
-    try std.testing.expect(prefs.recording and t.hasText("Add ⌘, ⌥ or ⌃"));
-    s.settings_ui.took(&s, shortcut.recorded(7, 1 << 19, 'x'));
-    t.settle(1);
-    try std.testing.expect(!prefs.recording and t.hasText("⌥ X"));
-    try std.testing.expect(prefs.applied.?.eql(.{ .code = 7, .mods = 1 << 11 }));
-    // ← goes back to the four.
-    try std.testing.expect(t.shortcut(.{ .key = ui.Shortcut.left }));
-    try std.testing.expect(prefs.applied.?.eql(.opt_cmd_space));
-    try std.testing.expect(t.hasText("⌥ X"));
-    try std.testing.expect(t.shortcut(.{ .key = ui.Shortcut.right }));
-    try std.testing.expect(t.shortcut(.{ .key = ui.Shortcut.right }));
-    try std.testing.expectEqual(shortcut.Choice.opt_space, prefs.applied.?);
+    // On the Mac, Return on it records a key of one's own (issue #1): a
+    // letter alone is refused, ⌥X is taken, kept, and shown as the chosen
+    // one. (A PC keeps to the four.)
+    if (@import("builtin").os.tag == .macos) {
+        press(&t, &.{.{ .command = .insert_newline }});
+        t.settle(1);
+        try std.testing.expect(prefs.recording and t.hasText("Type a shortcut"));
+        s.settings_ui.took(&s, shortcut.recorded(7, 0, 'x'));
+        t.settle(1);
+        try std.testing.expect(prefs.recording and t.hasText("Add ⌘, ⌥ or ⌃"));
+        s.settings_ui.took(&s, shortcut.recorded(7, 1 << 19, 'x'));
+        t.settle(1);
+        try std.testing.expect(!prefs.recording and t.hasText("⌥ X"));
+        try std.testing.expect(prefs.applied.?.eql(.{ .code = 7, .mods = 1 << 11 }));
+        // ← goes back to the four.
+        try std.testing.expect(t.shortcut(.{ .key = ui.Shortcut.left }));
+        try std.testing.expect(prefs.applied.?.eql(.opt_cmd_space));
+        try std.testing.expect(t.hasText("⌥ X"));
+        try std.testing.expect(t.shortcut(.{ .key = ui.Shortcut.right }));
+        try std.testing.expect(t.shortcut(.{ .key = ui.Shortcut.right }));
+        try std.testing.expectEqual(shortcut.Choice.opt_space, prefs.applied.?);
+    }
 
     // ↓ onto Google Suggestions, Return flips it.
     try std.testing.expect(s.suggest_on);
@@ -481,6 +511,7 @@ test "the panel never outgrows its window, which is never resized" {
     const gpa = std.testing.allocator;
     var ix: Index = .init(gpa);
     defer ix.deinit();
+    ix.starters = &mac_starters;
     for ([_][]const u8{ "Safari", "Mail", "Maps", "Music", "Notes", "Numbers", "Pages", "Photos", "Calendar", "Calculator" }) |n| {
         var buf: [64]u8 = undefined;
         try ix.add(n, try std.fmt.bufPrint(&buf, "/Applications/{s}.app", .{n}));
@@ -507,4 +538,33 @@ test "the panel never outgrows its window, which is never resized" {
         o.step = step;
         try std.testing.expect(o.height() <= view.max_height);
     }
+}
+
+test "on a PC the panel's keys are Ctrl's, and Settings says so" {
+    if (@import("builtin").os.tag == .macos) return error.SkipZigTest;
+    const gpa = std.testing.allocator;
+    var ix: Index = .init(gpa);
+    defer ix.deinit();
+    ix.starters = &mac_starters;
+    try ix.add("Safari", "/Applications/Safari.app");
+    try ix.add("System Settings", "/Applications/System Settings.app");
+    var prefs: Prefs = .{};
+    prefs.init();
+    var s: view.Nanolight = .{ .index = &ix };
+    defer s.query.deinit();
+    s.host = prefs.host();
+    s.reveal();
+    var t: ui.Tester = undefined;
+    try t.init(gpa, .init(&s, view.Nanolight.view), .{ .width = view.width, .height = view.max_height, .dark = true });
+    defer t.deinit();
+    t.settle(1);
+    press(&t, &.{.{ .insert = "s" }});
+    try std.testing.expect(t.hasText("Ctrl+2"));
+    try std.testing.expect(!t.containsText("⌘"));
+    try std.testing.expect(t.shortcut(.{ .key = ',', .ctrl = true }));
+    t.settle(1);
+    try std.testing.expect(s.settings_ui.open);
+    try std.testing.expect(t.hasText("This PC"));
+    try std.testing.expect(t.hasText("Alt Space"));
+    try std.testing.expect(t.hasText("Sync Across Computers"));
 }

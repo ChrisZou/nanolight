@@ -122,6 +122,7 @@ pub const Nanolight = struct {
     preview_url: []const u8 = "",
     /// Settings, drawn in the panel in place of the rows.
     settings_ui: settings_view.Settings = .{},
+    ext: ?*@import("raycast_view.zig").Ext = null,
 
     /// Called as it is shown: the query selected, the keys its own.
     pub fn reveal(s: *Nanolight) void {
@@ -138,6 +139,7 @@ pub const Nanolight = struct {
     /// The panel's height for the rows it lists.
     pub fn height(s: *const Nanolight) f32 {
         if (s.settings_ui.open) return settings_view.height;
+        if (s.ext) |e| if (e.open) return e.height();
         if (s.previewing) return max_height;
         var h: f32 = header_h + footer_h + 1;
         if (s.res.n == 0) return h;
@@ -181,18 +183,9 @@ pub const Nanolight = struct {
             o.view(c, s, p);
             return;
         };
-        if (s.settings_ui.open) {
-            // Return is the field's command, or a key. One event, one act.
-            if (s.settings_ui.returned(c) and !s.settings_ui.took_return) {
-                s.settings_ui.took_return = true;
-                s.settings_ui.activateSelected(s);
-            }
-            const h = s.follow(c, settings_view.height);
-            const body = ui.div(c).column().wFull().h(h).clip();
-            defer body.end();
-            s.settings_ui.view(c, s, p);
-            return;
-        }
+        if (s.settings_ui.open) return s.settings_ui.inPanel(c, s, p);
+        // A Raycast extension's command, while it runs (raycast_view.zig).
+        if (s.ext) |e| if (e.open) return e.panel(c, s, p);
 
         s.keys(c);
         const submitted = s.header(c, p);
@@ -443,7 +436,7 @@ pub const Nanolight = struct {
         if (i == s.sel) {
             ui.text(c, if (r.kind == .app or r.kind == .settings) "Open" else "Go", .{ .size = 12, .weight = .medium, .color = p.sub });
             ui.kbd(c, "↩");
-        } else if (i < 9) ui.textf(c, .{ .size = 12, .weight = .medium, .color = p.sub.alpha(0.5), .tabular = true }, "⌘{d}", .{i + 1});
+        } else if (i < 9) ui.textf(c, .{ .size = 12, .weight = .medium, .color = p.sub.alpha(0.5), .tabular = true }, "{s}{d}", .{ results.mod, i + 1 });
     }
 
     fn calcCard(s: *Nanolight, c: *ui.Context, p: Palette) void {
@@ -517,7 +510,7 @@ pub const Nanolight = struct {
         }
         if (s.previewing) {
             ui.text(c, "Open in Browser", .{ .size = 12, .weight = .medium, .color = p.text.alpha(0.85) });
-            ui.kbd(c, "⌘↩");
+            ui.kbd(c, results.mod ++ "↩");
             ui.div(c).w(1).h(14).bg(p.hair).end();
             ui.text(c, "Back", .{ .size = 12, .color = p.sub.alpha(0.8) });
             ui.kbd(c, "esc");

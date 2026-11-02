@@ -6,7 +6,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const nanoui = @import("nanoui");
-const hotkey = @import("hotkey.zig");
+const hotkey = @import("hotkey_mac.zig");
 const mac = builtin.os.tag == .macos;
 const objc = nanoui.objc;
 
@@ -46,8 +46,10 @@ pub const Choice = struct {
         return all[if (dir < 0) (i + all.len - 1) % all.len else (i + 1) % all.len];
     }
 
-    /// "⌥ ⌘ Space", "⌥ X": the modifiers, then the key.
+    /// "⌥ ⌘ Space", "⌥ X": the modifiers, then the key. On a PC "Ctrl
+    /// Alt Space".
     pub fn format(c: Choice, w: *std.Io.Writer) std.Io.Writer.Error!void {
+        if (!mac) return w.print("{f} {f}", .{ c.held(), c.key() });
         for (glyphs) |g| if (c.mods & g[0] != 0) try w.print("{s} ", .{g[1]});
         try w.print("{f}", .{c.key()});
     }
@@ -60,6 +62,19 @@ pub const Choice = struct {
     /// The key alone, for a key cap: "Space", "X".
     pub fn key(c: Choice) Key {
         return .{ .code = c.code, .ch = c.ch };
+    }
+
+    /// The modifiers held on a PC (Windows, Linux). The four offered sit
+    /// where the Mac's do on a PC keyboard: Alt where ⌘ is (PowerToys Run
+    /// and KRunner open on Alt Space). Anything else, by its bits.
+    pub fn pc(c: Choice) Pc {
+        if (c.preset()) |i| return switch (i) {
+            0 => .{ .alt = true },
+            1 => .{ .ctrl = true, .alt = true },
+            2 => .{ .ctrl = true },
+            else => .{ .ctrl = true, .shift = true },
+        };
+        return .{ .ctrl = c.mods & (hotkey.cmd | hotkey.control) != 0, .alt = c.mods & hotkey.option != 0, .shift = c.mods & hotkey.shift != 0 };
     }
 
     /// AppKit's modifier flags, as the system's shortcut table keeps them.
@@ -88,7 +103,8 @@ pub const Choice = struct {
 
     pub fn parse(s: []const u8) ?Choice {
         for (names, all) |n, p| if (std.mem.eql(u8, s, n)) return p;
-        if (!std.mem.startsWith(u8, s, "key:")) return null;
+        // A Mac's recorded key is the Mac's key code: a PC keeps to the four.
+        if (!mac or !std.mem.startsWith(u8, s, "key:")) return null;
         var it = std.mem.splitScalar(u8, s[4..], ':');
         const c: Choice = .{
             .code = std.fmt.parseInt(u32, it.next() orelse return null, 10) catch return null,
@@ -109,6 +125,15 @@ pub const Mods = struct {
     mods: u32,
 
     pub fn format(m: Mods, w: *std.Io.Writer) std.Io.Writer.Error!void {
+        if (!mac) {
+            const p = (Choice{ .mods = m.mods }).pc();
+            var sep: []const u8 = "";
+            for ([_]struct { bool, []const u8 }{ .{ p.ctrl, "Ctrl" }, .{ p.alt, "Alt" }, .{ p.shift, "Shift" } }) |n| if (n[0]) {
+                try w.print("{s}{s}", .{ sep, n[1] });
+                sep = " ";
+            };
+            return;
+        }
         for (glyphs) |g| if (m.mods & g[0] != 0) try w.writeAll(g[1]);
     }
 };
@@ -167,6 +192,8 @@ pub fn recorded(code: u16, flags: u64, ch: u21) Recorded {
     return if (c.usable()) .{ .key = c } else .unusable;
 }
 
+pub const Pc = struct { ctrl: bool = false, alt: bool = false, shift: bool = false };
+
 const ns_shift: u64 = 1 << 17;
 const ns_ctrl: u64 = 1 << 18;
 const ns_opt: u64 = 1 << 19;
@@ -223,6 +250,7 @@ pub const Clash = struct {
 
 fn systemName(id: u32) []const u8 {
     return switch (id) {
+        pc_taken => "another app or your desktop",
         64 => "Spotlight",
         65 => "Finder's search window",
         60, 61 => "the input source switcher",
@@ -245,7 +273,7 @@ pub fn clash(c: Choice, system: []const SystemKey, others: *const Others) Clash 
 
 /// The system's shortcuts (macOS keeps them in its defaults).
 pub fn systemKeys(buf: []SystemKey) []SystemKey {
-    if (!mac) return buf[0..0];
+    if (!mac) return pcKeys(buf);
     const pool = objc.Pool.push();
     defer pool.pop();
     const ud = objc.msg(objc.Object, objc.class("NSUserDefaults"), "standardUserDefaults", .{});
@@ -272,6 +300,19 @@ pub fn systemKeys(buf: []SystemKey) []SystemKey {
         };
         n += 1;
     }
+    return buf[0..n];
+}
+
+/// A key another program holds on a PC, as a system shortcut.
+const pc_taken: u32 = 1000;
+
+/// On a PC there is no table of shortcuts: each choice is tried.
+fn pcKeys(buf: []SystemKey) []SystemKey {
+    var n: usize = 0;
+    for (Choice.all) |c| if (n < buf.len and @import("hotkey.zig").taken(c)) {
+        buf[n] = .{ .id = pc_taken, .enabled = true, .key = hotkey.space, .mods = c.appkit() };
+        n += 1;
+    };
     return buf[0..n];
 }
 
@@ -352,6 +393,7 @@ test "the choice is kept" {
 }
 
 test "any key with ⌘, ⌥ or ⌃ can be recorded, kept and named" {
+    if (!mac) return error.SkipZigTest;
     const t = std.testing;
     // ⌥X, as AppKit reports it: X's code, Option's flag, "x".
     const r = recorded(7, ns_opt, 'x');
