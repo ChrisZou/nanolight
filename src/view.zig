@@ -26,6 +26,10 @@ pub const Host = struct {
     /// Shows a search's page in the panel, over `webArea`; null takes it
     /// away. Without it, searches open in the browser.
     preview: ?*const fn (ctx: *anyopaque, url: ?[]const u8) void = null,
+    /// Picemon keyword search into `out` (from `img ` / `pic `).
+    pic: ?*const fn (ctx: *anyopaque, query: []const u8, out: *@import("pic.zig").List) void = null,
+    /// Start a Codex one-shot; the answer lands in `Nanolight.aiDone`.
+    ai: ?*const fn (ctx: *anyopaque, question: []const u8) void = null,
 };
 
 pub const width: f32 = 680;
@@ -40,6 +44,7 @@ pub fn appIcon(c: *ui.Context, size: f32) void {
 const header_h = 58;
 const row_h = 40;
 const calc_h = 92;
+const ai_h = 120;
 const section_h = 28;
 const footer_h = 38;
 const list_pad = 6;
@@ -119,6 +124,16 @@ pub const Nanolight = struct {
     preview_q: u64 = 0,
     preview_buf: [1024]u8 = undefined,
     preview_url: []const u8 = "",
+    /// Picemon hits for the current `img `/`pic ` query.
+    pics: @import("pic.zig").List = .{},
+    /// Codex Q&A (`ai `/`ask `).
+    ai_status: @import("ai.zig").Status = .ready,
+    ai_question: [@import("ai.zig").max_question]u8 = undefined,
+    ai_question_len: usize = 0,
+    ai_buf: [@import("ai.zig").max_answer]u8 = undefined,
+    ai_text: []const u8 = "",
+    /// Bumped each ask so a late answer is ignored.
+    ai_gen: u32 = 0,
 
     /// Called as it is shown: the query selected, the keys its own.
     pub fn reveal(s: *Nanolight) void {
@@ -139,7 +154,11 @@ pub const Nanolight = struct {
         if (s.res.n == 0) return h;
         h += 1 + list_pad * 2;
         for (s.res.slice(), 0..) |r, i| {
-            h += if (r.kind == .calc) calc_h else row_h;
+            h += switch (r.kind) {
+                .calc => calc_h,
+                .ai_answer => ai_h,
+                else => row_h,
+            };
             if (s.res.section(i) != null) h += section_h;
         }
         return h;
@@ -308,6 +327,40 @@ pub const Nanolight = struct {
         if (h == s.built) return;
         s.built = h;
         s.web.n = 0;
+        if (@import("pic.zig").take(q)) |needle| {
+            if (needle.len == 0) {
+                s.pics.clear();
+            } else if (s.host) |host| {
+                if (host.pic) |ask| {
+                    s.pics.clear();
+                    ask(host.ctx, needle, &s.pics);
+                }
+                // No pic hook (tests): keep whatever hits were already set.
+            }
+            s.res.buildPic(s.pics.n);
+            s.sel = 0;
+            return;
+        }
+        if (@import("ai.zig").take(q)) |question| {
+            const same = question.len == s.ai_question_len and std.mem.eql(u8, question, s.ai_question[0..s.ai_question_len]);
+            if (!same) {
+                if (question.len <= s.ai_question.len) {
+                    @memcpy(s.ai_question[0..question.len], question);
+                    s.ai_question_len = question.len;
+                } else s.ai_question_len = 0;
+                if (s.ai_status != .waiting) {
+                    s.ai_status = .ready;
+                    s.ai_text = "";
+                }
+            }
+            const show_answer = (s.ai_status == .done or s.ai_status == .failed) and same;
+            s.res.buildAi(show_answer);
+            s.sel = 0;
+            return;
+        }
+        if (s.ai_status == .waiting) {
+            // Left the ai prefix while Codex runs: keep the job, drop the UI state on return.
+        }
         if (s.host) |host| if (host.suggest) |ask| if (s.suggest_on and suggest.eligible(q) and @import("calc.zig").eval(q) == null) {
             if (!s.cache.lookup(q, &s.web)) ask(host.ctx, q);
         };
@@ -366,7 +419,11 @@ pub const Nanolight = struct {
         var sel_h: f32 = row_h;
         for (s.res.slice(), 0..) |r, i| {
             if (s.res.section(i) != null) y += section_h;
-            const rh: f32 = if (r.kind == .calc) calc_h else row_h;
+            const rh: f32 = switch (r.kind) {
+                .calc => calc_h,
+                .ai_answer => ai_h,
+                else => row_h,
+            };
             if (i == s.sel) {
                 sel_y = y;
                 sel_h = rh;
@@ -389,23 +446,42 @@ pub const Nanolight = struct {
     }
 
     fn row(s: *Nanolight, c: *ui.Context, p: Palette, i: usize, r: Row) void {
-        const big = r.kind == .calc;
-        const d = ui.div(c).row().wFull().h(if (big) calc_h else row_h).px(10).gap(12).itemsCenter().control();
+        const rh: f32 = switch (r.kind) {
+            .calc => calc_h,
+            .ai_answer => ai_h,
+            else => row_h,
+        };
+        const d = ui.div(c).row().wFull().h(rh).px(10).gap(12).itemsCenter().control();
         defer d.end();
         if (d.clicked()) {
             s.sel = i;
             s.activate(c);
         }
-        if (big) return s.calcCard(c, p);
+        if (r.kind == .calc) return s.calcCard(c, p);
+        if (r.kind == .ai_answer) return s.aiCard(c, p);
         s.tile(c, p, r);
         const q = s.query.text();
         switch (r.kind) {
             .clipboard => ui.text(c, "Clipboard History", .{ .size = 13.5, .weight = .medium, .color = p.text }),
-            .calc => unreachable,
+            .calc, .ai_answer => unreachable,
             .app => {
                 const a = s.index.apps.items[r.app];
                 ui.richText(c, a.name, s.highlight(i, r, p), .{ .size = 13.5, .weight = .medium, .color = p.text.alpha(0.82) });
                 ui.text(c, a.folder, .{ .size = 12, .color = p.sub.alpha(0.8) });
+            },
+            .pic => {
+                const hit = s.pics.get(r.pic);
+                ui.text(c, hit.name(), .{ .size = 13.5, .weight = .medium, .color = p.text, .truncate = .ellipsis });
+                ui.text(c, hit.folder(), .{ .size = 12, .color = p.sub.alpha(0.8), .truncate = .ellipsis });
+            },
+            .ai_ask => {
+                if (s.ai_status == .waiting) {
+                    ui.text(c, "Thinking…", .{ .size = 13.5, .weight = .medium, .color = p.text });
+                } else if (s.ai_question_len == 0) {
+                    ui.text(c, "Type a question", .{ .size = 13.5, .weight = .medium, .color = p.sub });
+                } else {
+                    ui.textf(c, .{ .size = 13.5, .weight = .medium, .color = p.text, .truncate = .ellipsis }, "Ask Codex “{s}”", .{s.ai_question[0..s.ai_question_len]});
+                }
             },
             .suggest => {
                 const w = s.web.get(r.web);
@@ -427,7 +503,7 @@ pub const Nanolight = struct {
         }
         ui.spacer(c);
         if (i == s.sel) {
-            ui.text(c, if (r.kind == .app) "Open" else "Go", .{ .size = 12, .weight = .medium, .color = p.sub });
+            ui.text(c, if (r.kind == .app or r.kind == .pic) "Open" else if (r.kind == .ai_answer) "Copy" else if (r.kind == .ai_ask) "Ask" else "Go", .{ .size = 12, .weight = .medium, .color = p.sub });
             ui.kbd(c, "↩");
         } else if (i < 9) ui.textf(c, .{ .size = 12, .weight = .medium, .color = p.sub.alpha(0.5), .tabular = true }, "⌘{d}", .{i + 1});
     }
@@ -463,6 +539,26 @@ pub const Nanolight = struct {
         ui.text(c, str, .{ .size = 11, .weight = .medium, .color = tone orelse p.sub, .tabular = true });
     }
 
+
+    fn aiCard(s: *Nanolight, c: *ui.Context, p: Palette) void {
+        const box = ui.div(c).column().wFull().gap(8).px(4);
+        defer box.end();
+        const label: []const u8 = if (s.ai_status == .failed) "Failed" else if (c.time - s.copied_at < 1.4) "Copied" else "Answer";
+        if (c.time - s.copied_at < 1.4) c.animationFrame();
+        ui.text(c, label, .{ .size = 11, .weight = .medium, .color = p.sub });
+        ui.text(c, if (s.ai_text.len > 0) s.ai_text else "No answer", .{ .size = 14, .color = p.text, .truncate = .ellipsis });
+    }
+
+    /// Codex finished (or failed) for generation `gen`.
+    pub fn aiDone(s: *Nanolight, gen: u32, ok: bool, text: []const u8) void {
+        if (gen != s.ai_gen) return;
+        const n = @min(text.len, s.ai_buf.len);
+        if (n > 0) @memcpy(s.ai_buf[0..n], text[0..n]);
+        s.ai_text = s.ai_buf[0..n];
+        s.ai_status = if (ok) .done else .failed;
+        s.built = 1;
+    }
+
     /// The row's picture: the app's icon, or a symbol on a quiet tile.
     fn tile(s: *Nanolight, c: *ui.Context, p: Palette, r: Row) void {
         if (r.kind == .app) if (s.index.icon(r.app)) |png| {
@@ -482,6 +578,8 @@ pub const Nanolight = struct {
         ui.icon(c, switch (r.kind) {
             .clipboard => "clipboard",
             .calc => "plus.forwardslash.minus",
+            .pic => "photo",
+            .ai_ask, .ai_answer => "sparkles",
             .ask_grok => "sparkles",
             .search_web => "globe",
             .suggest => "magnifyingglass",
@@ -552,6 +650,25 @@ pub const Nanolight = struct {
             .app => {
                 s.index.opened(r.app, s.kv);
                 s.go(s.index.apps.items[r.app].path);
+            },
+            .pic => s.go(s.pics.get(r.pic).slice()),
+            .ai_ask => {
+                if (s.ai_status == .waiting or s.ai_question_len == 0) return;
+                if (s.host) |host| {
+                    const ask = host.ai orelse return;
+                    s.ai_status = .waiting;
+                    s.ai_text = "";
+                    s.ai_gen +%= 1;
+                    s.built = 1;
+                    s.res.buildAi(false);
+                    ask(host.ctx, s.ai_question[0..s.ai_question_len]);
+                }
+            },
+            .ai_answer => {
+                if (s.ai_text.len == 0) return;
+                c.clipboard.write(c.clipboard.ctx, s.ai_text);
+                s.copied_at = c.time;
+                return;
             },
             .ask_grok, .search_x => s.go(results.url(&s.url_buf, r.kind, s.query.text())),
             .search_web => s.search(s.query.text()),

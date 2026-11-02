@@ -75,9 +75,11 @@ const Live = struct {
     paste_attempts: u8 = 0,
     paste_count: objc.NSInteger = 0,
     clipboard_hotkey: bool = false,
+    home: []const u8 = "",
+    ai_job: ?*AiJob = null,
 
     fn host(l: *Live) view.Host {
-        return .{ .ctx = l, .open = open, .hide = hide, .resize = resize, .suggest = ask, .preview = showPage };
+        return .{ .ctx = l, .open = open, .hide = hide, .resize = resize, .suggest = ask, .preview = showPage, .pic = picSearch, .ai = aiAsk };
     }
 
     fn open(ctx: *anyopaque, target: []const u8) void {
@@ -208,6 +210,33 @@ const Live = struct {
             .headers = &.{.{ .name = "Accept", .value = "application/json" }},
             .timeout = 4,
         }, a, Ask.done);
+    }
+
+
+    fn picSearch(ctx: *anyopaque, query: []const u8, out: *@import("pic.zig").List) void {
+        const l: *Live = @ptrCast(@alignCast(ctx));
+        @import("pic.zig").search(l.app.gpa, l.app.io, l.home, query, out);
+    }
+
+    fn aiAsk(ctx: *anyopaque, question: []const u8) void {
+        const l: *Live = @ptrCast(@alignCast(ctx));
+        if (l.ai_job != null) return;
+        const job = l.app.gpa.create(AiJob) catch {
+            l.s.aiDone(l.s.ai_gen, false, "Couldn't start Codex");
+            return;
+        };
+        job.* = .{ .live = l, .gen = l.s.ai_gen, .qlen = @min(question.len, job.question.len) };
+        @memcpy(job.question[0..job.qlen], question[0..job.qlen]);
+        l.ai_job = job;
+        const thread = std.Thread.spawn(.{}, aiWorker, .{job}) catch {
+            l.ai_job = null;
+            l.app.gpa.destroy(job);
+            l.s.aiDone(l.s.ai_gen, false, "Couldn't start Codex");
+            if (l.window) |w| w.redraw();
+            return;
+        };
+        thread.detach();
+        nanoui.App.after(200, l, aiPoll);
     }
 
     /// A search's page in the panel, or (null) not.
@@ -546,6 +575,70 @@ const Live = struct {
     }
 };
 
+
+/// A Codex one-shot in flight.
+const AiJob = struct {
+    live: *Live,
+    gen: u32,
+    question: [@import("ai.zig").max_question]u8 = undefined,
+    qlen: usize = 0,
+    answer: [@import("ai.zig").max_answer]u8 = undefined,
+    alen: usize = 0,
+    ok: bool = false,
+    done: std.atomic.Value(bool) = .init(false),
+};
+
+fn aiWorker(job: *AiJob) void {
+    const ai = @import("ai.zig");
+    var codex_buf: [128]u8 = undefined;
+    const codex = ai.findCodex(job.live.app.io, &codex_buf);
+    var temp: ai.Temp = .{};
+    ai.nextTemp(&temp);
+    defer {
+        std.Io.Dir.deleteFileAbsolute(job.live.app.io, temp.outPath()) catch {};
+        std.Io.Dir.deleteFileAbsolute(job.live.app.io, temp.logPath()) catch {};
+    }
+    if (codex.len == 0) {
+        const msg = "Codex not found";
+        @memcpy(job.answer[0..msg.len], msg);
+        job.alen = msg.len;
+        job.ok = false;
+        job.done.store(true, .release);
+        return;
+    }
+    const text_ans = ai.run(job.live.app.gpa, job.live.app.io, codex, job.question[0..job.qlen], temp.outPath(), temp.logPath(), &job.answer) catch |e| {
+        const msg: []const u8 = switch (e) {
+            error.BadQuestion => "Empty question",
+            error.TempFile => "Couldn't create temp file",
+            error.SpawnFailed => "Couldn't run Codex",
+            error.NoAnswer => "No answer",
+            error.CodexFailed => "Codex failed",
+        };
+        @memcpy(job.answer[0..msg.len], msg);
+        job.alen = msg.len;
+        job.ok = false;
+        job.done.store(true, .release);
+        return;
+    };
+    job.alen = text_ans.len;
+    job.ok = true;
+    job.done.store(true, .release);
+}
+
+fn aiPoll(ctx: ?*anyopaque) callconv(.c) void {
+    const l: *Live = @ptrCast(@alignCast(ctx.?));
+    const job = l.ai_job orelse return;
+    if (!job.done.load(.acquire)) {
+        nanoui.App.after(200, l, aiPoll);
+        if (l.window) |w| w.redraw();
+        return;
+    }
+    l.s.aiDone(job.gen, job.ok, job.answer[0..job.alen]);
+    l.ai_job = null;
+    l.app.gpa.destroy(job);
+    if (l.window) |w| w.redraw();
+}
+
 /// A question to Google on its way: the words it is about.
 const Ask = struct {
     live: *Live,
@@ -615,7 +708,7 @@ pub fn main(init: std.process.Init) !void {
     defer s.query.deinit();
     var clips: clipboard.Capture = .{ .store = .init(init.gpa), .io = init.io, .home = init.environ_map.get("HOME") };
     defer clips.deinit();
-    var live: Live = .{ .app = app, .s = &s, .o = &o, .kv = kv, .clipboard = &clips, .choice = shortcut.load(kv, init.gpa) };
+    var live: Live = .{ .app = app, .s = &s, .o = &o, .kv = kv, .clipboard = &clips, .choice = shortcut.load(kv, init.gpa), .home = init.environ_map.get("HOME") orelse "" };
     defer live.paste_target.deinit();
     defer s.clip.query.deinit();
     s.clip.store = &clips.store;

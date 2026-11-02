@@ -13,6 +13,12 @@ pub const Kind = enum {
     clipboard,
     calc,
     app,
+    /// A Picemon image hit (`Row.pic`).
+    pic,
+    /// Ask Codex (`ai ` / `ask `).
+    ai_ask,
+    /// Codex's answer (Return copies it).
+    ai_answer,
     ask_grok,
     search_x,
     search_web,
@@ -25,6 +31,8 @@ pub const Kind = enum {
             .clipboard => "Clipboard",
             .calc => "Calculator",
             .app => "Application",
+            .pic => "Image",
+            .ai_ask, .ai_answer => "AI",
             .ask_grok, .search_x, .search_web, .suggest => "Web",
         };
     }
@@ -35,6 +43,9 @@ pub const Kind = enum {
             .clipboard => "Open Clipboard History",
             .calc => "Copy Answer",
             .app => "Open Application",
+            .pic => "Open Image",
+            .ai_ask => "Ask Codex",
+            .ai_answer => "Copy Answer",
             .ask_grok => "Ask Grok",
             .search_x => "Search X",
             .search_web, .suggest => "Search Google",
@@ -46,6 +57,8 @@ pub const Kind = enum {
             .clipboard => "Clipboard",
             .calc => "Calculator",
             .app => if (suggested) "Suggestions" else "Applications",
+            .pic => "Images",
+            .ai_ask, .ai_answer => "AI",
             .search_web, .suggest => "Google",
             .ask_grok, .search_x => "Ask & Search",
         };
@@ -58,6 +71,8 @@ pub const Row = struct {
     app: u32 = 0,
     /// Which of the completions (`.suggest`).
     web: u8 = 0,
+    /// Which Picemon hit (`.pic`).
+    pic: u8 = 0,
     /// Which of its name's bytes the query matched.
     match: search.Match = .{ .score = 0 },
 };
@@ -122,6 +137,24 @@ pub const Results = struct {
         r.push(.{ .kind = .search_x });
     }
 
+
+    /// Picemon hits only (from `img ` / `pic `).
+    pub fn buildPic(r: *Results, n: usize) void {
+        r.n = 0;
+        r.suggested = false;
+        r.answer = "";
+        r.hex = "";
+        for (0..@min(n, max_rows)) |i| r.push(.{ .kind = .pic, .pic = @intCast(i) });
+    }
+
+    /// Codex Q&A rows (from `ai ` / `ask `). `answered` picks the copy row.
+    pub fn buildAi(r: *Results, answered: bool) void {
+        r.n = 0;
+        r.suggested = false;
+        r.hex = "";
+        if (answered) r.push(.{ .kind = .ai_answer }) else r.push(.{ .kind = .ai_ask });
+    }
+
     fn push(r: *Results, row: Row) void {
         if (r.n == max_rows) return;
         r.rows[r.n] = row;
@@ -143,7 +176,7 @@ pub fn url(buf: []u8, kind: Kind, query: []const u8) []const u8 {
         .ask_grok => "https://grok.com/?q=",
         .search_x => "https://x.com/search?f=live&q=",
         .search_web, .suggest => "https://www.google.com/search?q=",
-        .calc, .app, .clipboard => return "",
+        .calc, .app, .clipboard, .pic, .ai_ask, .ai_answer => return "",
     };
     var w: std.Io.Writer = .fixed(buf);
     w.writeAll(base) catch return "";

@@ -11,6 +11,8 @@ test {
     _ = @import("calc.zig");
     _ = @import("results.zig");
     _ = @import("suggest.zig");
+    _ = @import("pic.zig");
+    _ = @import("ai.zig");
     _ = @import("promo_camera.zig");
     _ = @import("single.zig");
     _ = @import("clickthrough.zig");
@@ -503,4 +505,28 @@ test "the panel never outgrows its window, which is never resized" {
         o.step = step;
         try std.testing.expect(o.height() <= view.max_height);
     }
+}
+
+
+test "img and ai prefixes list their own rows" {
+    const gpa = std.testing.allocator;
+    var ix: Index = .init(gpa);
+    defer ix.deinit();
+    try ix.add("Safari", "/Applications/Safari.app");
+    var s: view.Nanolight = .{ .index = &ix };
+    defer s.query.deinit();
+    s.pics.push("/Users/chris/Pictures/demo.png");
+    s.query.set("img demo");
+    s.rebuild();
+    try std.testing.expectEqual(results.Kind.pic, s.res.rows[0].kind);
+    try std.testing.expectEqualStrings("demo.png", s.pics.get(0).name());
+    s.ai_status = .ready;
+    s.query.set("ai what is zig");
+    s.rebuild();
+    try std.testing.expectEqual(results.Kind.ai_ask, s.res.rows[0].kind);
+    s.ai_status = .done;
+    s.ai_text = "Zig is a systems language.";
+    s.built = 1;
+    s.rebuild();
+    try std.testing.expectEqual(results.Kind.ai_answer, s.res.rows[0].kind);
 }
