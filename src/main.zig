@@ -27,6 +27,14 @@ const account = @import("account.zig");
 const Settings = @import("settings.zig").Settings;
 
 const suggest_key = "nanolight.suggest";
+
+pub fn applyChoice(ctx: *anyopaque, choice: shortcut.Choice) void {
+    Live.apply(ctx, choice);
+}
+
+pub fn loginItem(ctx: *anyopaque, set: ?bool) bool {
+    return Live.login(ctx, set);
+}
 /// The version an automatic update restarted into, for the new copy to say.
 const updated_key = "nanolight.updated";
 /// How long the panel must have been away before an update restarts it.
@@ -39,7 +47,7 @@ const sync_at_key = "nanolight.sync.at";
 /// glass behind the panel follows its height. (A window resized on every
 /// frame of the height's spring shook as it searched: AppKit's new frame
 /// and Metal's next drawable don't land together.)
-const Live = struct {
+pub const Live = struct {
     app: *nanoui.App,
     s: *Nanolight,
     o: *Onboard,
@@ -67,7 +75,9 @@ const Live = struct {
     account_label: [192]u8 = undefined,
 
     fn host(l: *Live) view.Host {
-        return .{ .ctx = l, .open = open, .hide = hide, .resize = resize, .suggest = ask, .preview = showPage };
+        const bind = @import("settings_bind.zig");
+        bind.box.ctx = l;
+        return .{ .ctx = l, .open = open, .hide = hide, .resize = resize, .suggest = ask, .preview = showPage, .settings = &bind.box };
     }
 
     fn open(ctx: *anyopaque, target: []const u8) void {
@@ -153,19 +163,8 @@ const Live = struct {
         _ = nanoui.shell.openUrl(account.terms_url);
     }
 
-    /// The menu's account row: what signing in does, or who is synced.
     fn accountItems(l: *Live) [2]nanoui.menu.MenuItem {
-        const a = if (l.acct) |*x| x else return .{ .{ .label = "Sync Across Macs…", .disabled = true }, .separator };
-        const who: []const u8 = if (a.email().len > 0) a.email() else "your Codegraff account";
-        return switch (a.state) {
-            .signed_out => .{ .{ .label = "Sign In with Codegraff to Sync Across Macs…", .click = .of(l, Live.accountClick) }, .{ .label = "Codegraff Terms & Privacy", .click = .of(l, Live.openTerms) } },
-            .starting => .{ .{ .label = "Signing In…", .disabled = true }, .{ .label = "Codegraff Terms & Privacy", .click = .of(l, Live.openTerms) } },
-            .waiting => .{ .{ .label = "Approve in Your Browser… (Click to Cancel)", .click = .of(l, Live.accountClick) }, .{ .label = "Codegraff Terms & Privacy", .click = .of(l, Live.openTerms) } },
-            .signed_in => .{
-                .{ .label = std.fmt.bufPrint(&l.account_label, "Synced as {s}", .{who}) catch "Synced", .disabled = true },
-                .{ .label = "Sign Out of Codegraff", .click = .of(l, Live.accountClick) },
-            },
-        };
+        return @import("account_menu.zig").items(if (l.acct) |*x| x else null, &l.account_label, .of(l, Live.accountClick), .of(l, Live.openTerms));
     }
 
     /// Google is asked once typing pauses (`suggest.pause_ms`).
@@ -221,7 +220,7 @@ const Live = struct {
         if (l.window) |w| w.redraw();
     }
 
-    fn toggleSuggest(l: *Live, item: *nanoui.menu.Item) void {
+    pub fn toggleSuggest(l: *Live, item: *nanoui.menu.Item) void {
         l.s.suggest_on = item.checked;
         l.kv.set(suggest_key, if (item.checked) "1" else "0") catch {};
         l.touched();
@@ -237,6 +236,7 @@ const Live = struct {
         const label = if (ready) |v| std.fmt.bufPrint(&l.update_label, "Restart to Update to {s}", .{v}) catch "Restart to Update" else "Check for Updates";
         const acc = l.accountItems();
         t.setMenu("Nanolight", &.{
+            .{ .label = "Settings…", .accelerator = "Cmd+,", .click = .of(l, Live.menuSettings) },
             .{ .label = "Open Nanolight", .click = .of(l, Live.menuShow) },
             .{ .label = "Welcome…", .click = .of(l, Live.welcome) },
             .{ .label = "Google Suggestions", .kind = .checkbox, .checked = l.s.suggest_on, .click = .of(l, Live.toggleSuggest) },
@@ -348,7 +348,7 @@ const Live = struct {
             std.log.warn("nanolight: {s} can't be registered ({s}); open it from the menu bar", .{ choice.label(), @errorName(e) });
     }
 
-    fn apply(ctx: *anyopaque, choice: shortcut.Choice) void {
+    pub fn apply(ctx: *anyopaque, choice: shortcut.Choice) void {
         const l: *Live = @ptrCast(@alignCast(ctx));
         shortcut.save(l.kv, choice);
         l.useKey(choice);
@@ -372,7 +372,7 @@ const Live = struct {
 
     /// Open at login: the system's login items (SMAppService, macOS 13 and
     /// later), which need the app to run from its bundle.
-    fn login(_: *anyopaque, set: ?bool) bool {
+    pub fn login(_: *anyopaque, set: ?bool) bool {
         const cls = objc_getClass("SMAppService") orelse return false;
         const svc = objc.msg(objc.Object, cls, "mainAppService", .{});
         if (set) |on| _ = objc.msg(objc.BOOL, svc, if (on) "registerAndReturnError:" else "unregisterAndReturnError:", .{@as(?*anyopaque, null)});
@@ -388,6 +388,20 @@ const Live = struct {
         l.o.start(l.choice);
         if (l.window) |w| if (w.isVisible()) w.hide();
         l.menuShow(item);
+    }
+
+    /// The menu opens the panel straight into Settings.
+    fn menuSettings(l: *Live, _: *nanoui.menu.Item) void {
+        nanoui.App.after(50, l, struct {
+            fn f(ctx: ?*anyopaque) callconv(.c) void {
+                const live: *Live = @ptrCast(@alignCast(ctx.?));
+                const w = live.window orelse return;
+                if (!(w.isVisible() and w.isFocused())) toggle(live);
+                live.o.active = false;
+                live.s.openSettings();
+                w.redraw();
+            }
+        }.f);
     }
 
     fn menuShow(l: *Live, _: *nanoui.menu.Item) void {

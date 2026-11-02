@@ -318,6 +318,139 @@ test "the welcome: a key, pressed for real, then a first search" {
     try std.testing.expectEqual(shortcut.Choice.ctrl_space, steps.applied.?);
 }
 
+const SettingsHost = @import("settings_host.zig").SettingsHost;
+
+/// A host that records what Settings asked it to do.
+const Prefs = struct {
+    probe: Probe = .{},
+    key: shortcut.Choice = .cmd_space,
+    applied: ?shortcut.Choice = null,
+    login_on: bool = false,
+    suggest_sets: u8 = 0,
+    box: SettingsHost = undefined,
+
+    fn init(p: *Prefs) void {
+        p.box = .{
+            .ctx = p,
+            .choice = choice,
+            .apply = apply,
+            .login = login,
+            .suggest = suggestSet,
+            .account = acct,
+            .email = email,
+            .sign_in = noop,
+            .sign_out = noop,
+            .terms = noop,
+            .version = ver,
+            .ready = ready,
+            .check = noop,
+            .restart = noop,
+            .welcome = noop,
+            .quit = noop,
+        };
+    }
+    fn host(p: *Prefs) view.Host {
+        return .{ .ctx = p, .open = open, .hide = hide, .settings = &p.box };
+    }
+    fn open(ctx: *anyopaque, target: []const u8) void {
+        Probe.open(&@as(*Prefs, @ptrCast(@alignCast(ctx))).probe, target);
+    }
+    fn hide(ctx: *anyopaque) void {
+        Probe.hide(&@as(*Prefs, @ptrCast(@alignCast(ctx))).probe);
+    }
+    fn choice(ctx: *anyopaque) shortcut.Choice {
+        return @as(*Prefs, @ptrCast(@alignCast(ctx))).key;
+    }
+    fn apply(ctx: *anyopaque, c: shortcut.Choice) void {
+        const p: *Prefs = @ptrCast(@alignCast(ctx));
+        p.applied = c;
+        p.key = c;
+    }
+    fn login(ctx: *anyopaque, set: ?bool) bool {
+        const p: *Prefs = @ptrCast(@alignCast(ctx));
+        if (set) |on| p.login_on = on;
+        return p.login_on;
+    }
+    fn suggestSet(ctx: *anyopaque, _: bool) void {
+        @as(*Prefs, @ptrCast(@alignCast(ctx))).suggest_sets += 1;
+    }
+    fn acct(_: *anyopaque) @import("account.zig").State {
+        return .signed_out;
+    }
+    fn email(_: *anyopaque) []const u8 {
+        return "";
+    }
+    fn ver(_: *anyopaque) []const u8 {
+        return "0.1.0";
+    }
+    fn ready(_: *anyopaque) ?[]const u8 {
+        return null;
+    }
+    fn noop(_: *anyopaque) void {}
+};
+
+test "settings opens from ⌘,, from typing, and from the gear" {
+    const gpa = std.testing.allocator;
+    var ix: Index = .init(gpa);
+    defer ix.deinit();
+    try ix.add("Safari", "/Applications/Safari.app");
+    var prefs: Prefs = .{};
+    prefs.init();
+    var s: view.Nanolight = .{ .index = &ix };
+    defer s.query.deinit();
+    s.host = prefs.host();
+    s.reveal();
+    var t: ui.Tester = undefined;
+    try t.init(gpa, .init(&s, view.Nanolight.view), .{ .width = view.width, .height = view.max_height, .dark = true });
+    defer t.deinit();
+    t.settle(1);
+    // The gear is in the footer, named.
+    try std.testing.expect(t.hasText("Settings"));
+    try t.clickText("Settings");
+    t.settle(1);
+    try std.testing.expect(s.settings_ui.open);
+    try std.testing.expect(t.hasText("Open Nanolight with"));
+    _ = t.shortcut(.{ .key = ui.Shortcut.escape });
+    try std.testing.expect(!s.settings_ui.open);
+
+    // ⌘, opens it; Esc goes back to search.
+    try std.testing.expect(t.shortcut(.{ .key = ',', .cmd = true }));
+    t.settle(1);
+    try std.testing.expect(s.settings_ui.open);
+    try std.testing.expect(t.hasText("Google Suggestions"));
+    try std.testing.expect(t.hasText("Open at Login"));
+    try std.testing.expect(t.hasText("Sign In with Codegraff"));
+    try std.testing.expect(t.hasText("Terms & Privacy"));
+    try std.testing.expect(t.hasText("Check for Updates"));
+    _ = t.shortcut(.{ .key = ui.Shortcut.escape });
+    t.settle(1);
+    try std.testing.expect(!s.settings_ui.open);
+    try std.testing.expect(t.hasText("Safari"));
+
+    // Typing "settings" lists the row; Return opens it.
+    press(&t, &.{.{ .insert = "settings" }});
+    try std.testing.expect(t.hasText("Nanolight Settings"));
+    try std.testing.expectEqual(results.Kind.settings, s.res.rows[0].kind);
+    press(&t, &.{.{ .command = .insert_newline }});
+    t.settle(1);
+    try std.testing.expect(s.settings_ui.open);
+
+    // → picks the next shortcut and tells the host.
+    try std.testing.expect(t.shortcut(.{ .key = ui.Shortcut.right }));
+    try std.testing.expectEqual(shortcut.Choice.opt_space, prefs.applied.?);
+
+    // ↓ onto Google Suggestions, Return flips it.
+    try std.testing.expect(s.suggest_on);
+    _ = t.shortcut(.{ .key = ui.Shortcut.down });
+    press(&t, &.{.{ .command = .insert_newline }});
+    try std.testing.expectEqual(@as(usize, 1), s.settings_ui.sel);
+    try std.testing.expectEqual(true, s.settings_ui.open);
+    try std.testing.expectEqual(@as(u8, 1), prefs.suggest_sets);
+    try std.testing.expect(!s.suggest_on);
+    try std.testing.expectEqual(@as(u8, 1), prefs.suggest_sets);
+    try std.testing.expect(s.height() <= view.max_height);
+}
+
 test "the panel never outgrows its window, which is never resized" {
     const gpa = std.testing.allocator;
     var ix: Index = .init(gpa);

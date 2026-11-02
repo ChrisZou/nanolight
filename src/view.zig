@@ -1,8 +1,7 @@
 //! The launcher panel: the query, then what it finds in sections, then a
-//! footer naming what Return does. Neutral glass with a hairline rim,
-//! 40-point rows, the selection a grey step that slides between them,
-//! matched letters drawn stronger. Nothing moves while nothing happens:
-//! frames come from keys, and from the height and selection settling.
+//! footer naming what Return does. Neutral glass, a hairline rim, 40-point
+//! rows, the selection a grey step that slides between them. Nothing moves
+//! while nothing happens: frames come from keys, and from height settling.
 const std = @import("std");
 const nanoui = @import("nanoui");
 const ui = nanoui.ui;
@@ -10,6 +9,8 @@ const motion = ui.motion;
 const Index = @import("apps.zig").Index;
 const results = @import("results.zig");
 const suggest = @import("suggest.zig");
+const settings_view = @import("settings_view.zig");
+const SettingsHost = @import("settings_host.zig").SettingsHost;
 const Row = results.Row;
 
 /// What the panel asks of whatever shows it (the window, or the film).
@@ -26,6 +27,9 @@ pub const Host = struct {
     /// Shows a search's page in the panel, over `webArea`; null takes it
     /// away. Without it, searches open in the browser.
     preview: ?*const fn (ctx: *anyopaque, url: ?[]const u8) void = null,
+    /// Settings (the shortcut, login, sync, updates). Without it the
+    /// screen still draws, and changes nothing the app keeps.
+    settings: ?*const SettingsHost = null,
 };
 
 pub const width: f32 = 680;
@@ -37,11 +41,11 @@ pub const icon_png = @embedFile("icon-256.png");
 pub fn appIcon(c: *ui.Context, size: f32) void {
     _ = ui.image(c, .{ .key = "nanolight-icon", .bytes = icon_png, .max_width = size, .max_height = size, .radius = 0, .scale = 2 });
 }
-const header_h = 58;
+pub const header_h = 58;
 const row_h = 40;
 const calc_h = 92;
 const section_h = 28;
-const footer_h = 38;
+pub const footer_h = 38;
 const list_pad = 6;
 /// The room a window leaves round the panel for its shadow (`Nanolight.margin`).
 pub const shadow_margin: f32 = 40;
@@ -105,10 +109,9 @@ pub const Nanolight = struct {
     revealed: u64 = 0,
     /// Said in the footer in place of the name ("Updated to 0.1.3"), if set.
     note: []const u8 = "",
-    /// The first-run welcome, drawn in the panel while it is active.
+    /// The first-run welcome, drawn while it is active.
     onboard: ?*@import("onboard.zig").Onboard = null,
-    /// Google's completions: whether to ask for them, those listed, and
-    /// the answers so far.
+    /// Google's completions: whether to ask, those listed, the answers.
     suggest_on: bool = true,
     web: suggest.List = .{},
     cache: suggest.Cache = .{},
@@ -117,10 +120,13 @@ pub const Nanolight = struct {
     preview_q: u64 = 0,
     preview_buf: [1024]u8 = undefined,
     preview_url: []const u8 = "",
+    /// Settings, drawn in the panel in place of the rows.
+    settings_ui: settings_view.Settings = .{},
 
     /// Called as it is shown: the query selected, the keys its own.
     pub fn reveal(s: *Nanolight) void {
         s.back();
+        s.settings_ui.hide();
         s.shown +%= 1;
         // Suggestions follow what was opened since.
         s.built = 1;
@@ -131,6 +137,7 @@ pub const Nanolight = struct {
 
     /// The panel's height for the rows it lists.
     pub fn height(s: *const Nanolight) f32 {
+        if (s.settings_ui.open) return settings_view.height;
         if (s.previewing) return max_height;
         var h: f32 = header_h + footer_h + 1;
         if (s.res.n == 0) return h;
@@ -174,6 +181,18 @@ pub const Nanolight = struct {
             o.view(c, s, p);
             return;
         };
+        if (s.settings_ui.open) {
+            // Return is the field's command, or a key. One event, one act.
+            if (s.settings_ui.returned(c) and !s.settings_ui.took_return) {
+                s.settings_ui.took_return = true;
+                s.settings_ui.activateSelected(s);
+            }
+            const h = s.follow(c, settings_view.height);
+            const body = ui.div(c).column().wFull().h(h).clip();
+            defer body.end();
+            s.settings_ui.view(c, s, p);
+            return;
+        }
 
         s.keys(c);
         const submitted = s.header(c, p);
@@ -218,6 +237,8 @@ pub const Nanolight = struct {
             if (c.shortcut(.{ .key = S.escape })) s.back();
             return;
         }
+        // ⌘,: Settings, as on the Mac. The comma never reaches the field.
+        if (c.shortcut(.{ .key = ',', .cmd = true })) return s.openSettings();
         // ⌘↩: a search in the browser rather than in the panel.
         if (c.shortcut(.{ .key = S.enter, .cmd = true })) s.activateOut(c);
         // Tab takes the faint completion, as → does.
@@ -396,6 +417,10 @@ pub const Nanolight = struct {
                 ui.richText(c, a.name, s.highlight(i, r, p), .{ .size = 13.5, .weight = .medium, .color = p.text.alpha(0.82) });
                 ui.text(c, a.folder, .{ .size = 12, .color = p.sub.alpha(0.8) });
             },
+            .settings => {
+                ui.text(c, "Nanolight Settings", .{ .size = 13.5, .weight = .medium, .color = p.text });
+                ui.text(c, "Shortcut, sync, updates", .{ .size = 12, .color = p.sub.alpha(0.8) });
+            },
             .suggest => {
                 const w = s.web.get(r.web);
                 ui.richText(c, w, s.added(i, w, p), .{ .size = 13.5, .color = p.text.alpha(0.72), .truncate = .ellipsis });
@@ -416,40 +441,13 @@ pub const Nanolight = struct {
         }
         ui.spacer(c);
         if (i == s.sel) {
-            ui.text(c, if (r.kind == .app) "Open" else "Go", .{ .size = 12, .weight = .medium, .color = p.sub });
+            ui.text(c, if (r.kind == .app or r.kind == .settings) "Open" else "Go", .{ .size = 12, .weight = .medium, .color = p.sub });
             ui.kbd(c, "↩");
         } else if (i < 9) ui.textf(c, .{ .size = 12, .weight = .medium, .color = p.sub.alpha(0.5), .tabular = true }, "⌘{d}", .{i + 1});
     }
 
-    /// The math as Raycast shows it: the expression, an arrow, the answer,
-    /// each over a small label; the answer's says Copied once it is.
     fn calcCard(s: *Nanolight, c: *ui.Context, p: Palette) void {
-        const half = (width - list_pad * 2 - 20 - 32 - 24) / 2;
-        {
-            const l = ui.div(c).column().w(half).itemsCenter().gap(6);
-            defer l.end();
-            ui.text(c, std.mem.trim(u8, s.query.text(), " ="), .{ .size = 20, .weight = .medium, .color = p.text.alpha(0.8), .tabular = true });
-            chip(c, p, "Expression", null);
-        }
-        {
-            const arrow = ui.div(c).size(32, 32).roundedFull().bg(p.tile).center();
-            defer arrow.end();
-            ui.icon(c, "arrow.right", .{ .size = 13, .weight = .semibold, .color = p.sub });
-        }
-        const r = ui.div(c).column().w(half).itemsCenter().gap(6);
-        defer r.end();
-        ui.text(c, s.res.answer, .{ .size = 28, .weight = .semibold, .color = p.text, .tabular = true, .tracking = -0.3 });
-        if (c.time - s.copied_at < 1.4) {
-            c.animationFrame();
-            chip(c, p, "Copied", c.theme.success);
-        } else chip(c, p, if (s.res.hex.len > 0) c.print("Result · {s}", .{s.res.hex}) else "Result", null);
-    }
-
-    fn chip(c: *ui.Context, p: Palette, str: []const u8, tone: ?ui.Color) void {
-        const d = ui.div(c).row().gap(4).px(8).h(20).itemsCenter().rounded(6).bg(if (tone) |t| t.alpha(0.16) else p.tile);
-        defer d.end();
-        if (tone) |t| ui.icon(c, "checkmark", .{ .size = 10, .weight = .bold, .color = t });
-        ui.text(c, str, .{ .size = 11, .weight = .medium, .color = tone orelse p.sub, .tabular = true });
+        @import("calc_card.zig").draw(c, p, s.query.text(), s.res.answer, s.res.hex, c.time - s.copied_at < 1.4);
     }
 
     /// The row's picture: the app's icon, or a symbol on a quiet tile.
@@ -473,6 +471,7 @@ pub const Nanolight = struct {
             .ask_grok => "sparkles",
             .search_web => "globe",
             .suggest => "magnifyingglass",
+            .settings => "gearshape",
             else => "app.dashed",
         }, .{ .size = if (big) 16 else 13, .weight = .medium, .color = p.text });
     }
@@ -508,6 +507,14 @@ pub const Nanolight = struct {
         appIcon(c, 16);
         ui.textf(c, .{ .size = 12, .weight = .medium, .color = p.sub.alpha(0.8) }, "{s} · {d} apps", .{ if (s.note.len > 0) s.note else "Nanolight", s.index.apps.items.len });
         ui.spacer(c);
+        {
+            ui.key(c, "settings-gear");
+            const g = ui.div(c).size(26, 26).rounded(7).center().control().hover(p.sel);
+            defer g.end();
+            if (g.clicked()) s.openSettings();
+            ui.icon(c, "gearshape", .{ .size = 13, .weight = .medium, .color = p.sub });
+            ui.text(c, "Settings", .{ .size = 1, .color = p.sub.alpha(0) });
+        }
         if (s.previewing) {
             ui.text(c, "Open in Browser", .{ .size = 12, .weight = .medium, .color = p.text.alpha(0.85) });
             ui.kbd(c, "⌘↩");
@@ -542,6 +549,7 @@ pub const Nanolight = struct {
             },
             .ask_grok, .search_x => s.go(results.url(&s.url_buf, r.kind, s.query.text())),
             .search_web => s.search(s.query.text()),
+            .settings => s.openSettings(),
             .suggest => {
                 // Its words fill the field, as a search box's would.
                 s.query.set(s.web.get(r.web));
@@ -570,6 +578,11 @@ pub const Nanolight = struct {
         s.previewing = true;
         s.preview_q = std.hash.Wyhash.hash(0, s.query.text());
         show(h.ctx, u);
+    }
+
+    pub fn openSettings(s: *Nanolight) void {
+        s.back();
+        s.settings_ui.show();
     }
 
     /// The rows again, the page gone.

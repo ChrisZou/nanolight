@@ -17,12 +17,15 @@ pub const Kind = enum {
     search_web,
     /// One of Google's completions (`Row.web`).
     suggest,
+    /// Nanolight's own Settings, listed when the query asks for them.
+    settings,
 
     /// The row's kind as its trailing label shows it.
     pub fn label(k: Kind) []const u8 {
         return switch (k) {
             .calc => "Calculator",
             .app => "Application",
+            .settings => "Nanolight",
             .ask_grok, .search_x, .search_web, .suggest => "Web",
         };
     }
@@ -32,6 +35,7 @@ pub const Kind = enum {
         return switch (k) {
             .calc => "Copy Answer",
             .app => "Open Application",
+            .settings => "Open Settings",
             .ask_grok => "Ask Grok",
             .search_x => "Search X",
             .search_web, .suggest => "Search Google",
@@ -42,6 +46,7 @@ pub const Kind = enum {
         return switch (k) {
             .calc => "Calculator",
             .app => if (suggested) "Suggestions" else "Applications",
+            .settings => "Nanolight",
             .search_web, .suggest => "Google",
             .ask_grok, .search_x => "Ask & Search",
         };
@@ -104,6 +109,9 @@ pub const Results = struct {
         var ranked: [max_apps]search.Ranked = undefined;
         const n = search.rank(query, names, boost, &ranked);
         for (ranked[0..n]) |x| r.push(.{ .kind = .app, .app = x.index, .match = x.match });
+        // "settings" / "preferences": Nanolight's own screen, right under
+        // the apps: Return still opens System Settings, a key away from this.
+        if (isSettings(query)) r.push(.{ .kind = .settings });
         if (r.n > 0 and r.rows[0].kind == .calc) return;
         // The search for what was typed, its completions (as many as leave
         // room for the rest), then Grok and X.
@@ -112,6 +120,11 @@ pub const Results = struct {
         for (0..@min(web.len, max_web, room)) |i| r.push(.{ .kind = .suggest, .web = @intCast(i) });
         r.push(.{ .kind = .ask_grok });
         r.push(.{ .kind = .search_x });
+    }
+
+    /// "settings" and "preferences", the words people type for this.
+    fn isSettings(query: []const u8) bool {
+        return std.ascii.eqlIgnoreCase(query, "settings") or std.ascii.eqlIgnoreCase(query, "preferences");
     }
 
     fn push(r: *Results, row: Row) void {
@@ -135,7 +148,7 @@ pub fn url(buf: []u8, kind: Kind, query: []const u8) []const u8 {
         .ask_grok => "https://grok.com/?q=",
         .search_x => "https://x.com/search?f=live&q=",
         .search_web, .suggest => "https://www.google.com/search?q=",
-        .calc, .app => return "",
+        .calc, .app, .settings => return "",
     };
     var w: std.Io.Writer = .fixed(buf);
     w.writeAll(base) catch return "";
@@ -190,6 +203,11 @@ test "math first, then apps; ask and search only without an answer" {
     try t.expectEqual(Kind.ask_grok, r.rows[3].kind);
     try t.expect(r.section(1) == null and r.section(2) == null);
     try t.expectEqualStrings("Ask & Search", r.section(3).?);
+    // "settings": System Settings first, Nanolight's own a row under it.
+    r.build("settings", &names, &.{}, &.{}, &.{});
+    try t.expectEqual(Kind.app, r.rows[0].kind);
+    try t.expectEqual(@as(u32, 1), r.rows[0].app);
+    try t.expectEqual(Kind.settings, r.rows[1].kind);
     // A full list of apps still ends with every handoff.
     const many = [_][]const u8{ "Safari", "Mail", "Maps", "Pages", "Calendar", "Calculator", "FaceTime" };
     r.build("a", &many, &.{}, &.{}, &.{ "a1", "a2", "a3", "a4" });

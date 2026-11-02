@@ -270,7 +270,7 @@ pub const Onboard = struct {
             const tile = ui.div(c).size(26, 22).rounded(6).bg(p.tile).center();
             ui.icon(c, "magnifyingglass", .{ .size = 12, .weight = .semibold, .color = p.text });
             tile.end();
-            ui.text(c, "It lives in your menu bar. This welcome is in its menu, too.", .{ .size = 12.5, .color = p.sub });
+            ui.text(c, "Settings are on ⌘, and the gear. It also lives in your menu bar.", .{ .size = 12.5, .color = p.sub });
         }
         const h = o.hooks orelse return;
         const f = h.login orelse return;
