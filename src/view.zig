@@ -36,6 +36,8 @@ pub const Host = struct {
     restart: ?*const fn (ctx: *anyopaque) void = null,
     /// Quit Nanolight (`quit`).
     quit: ?*const fn (ctx: *anyopaque) void = null,
+    /// Write a PM note to the local outbox (`pm ` / `PM `).
+    pm: ?*const fn (ctx: *anyopaque, body: []const u8) void = null,
 };
 
 pub const width: f32 = 680;
@@ -56,10 +58,9 @@ const footer_h = 38;
 const list_pad = 6;
 /// The room a window leaves round the panel for its shadow (`Nanolight.margin`).
 pub const shadow_margin: f32 = 40;
-/// The tallest the panel gets: every app row, the four handoff rows and
-/// Google's completions, under four section heads (math lists fewer), or
-/// a search's page. The window is this tall.
-pub const max_height: f32 = header_h + footer_h + 2 + list_pad * 2 + results.max_rows * row_h + 4 * section_h;
+/// The tallest the panel gets: every app row and Ask Codex (or a pic/file
+/// list), under two section heads, or a search's page. The window is this tall.
+pub const max_height: f32 = header_h + footer_h + 2 + list_pad * 2 + results.max_rows * row_h + 2 * section_h;
 
 /// Where a search's page goes in a panel `h` tall: from `y` down from its
 /// top, `h` tall, between the header and the footer, the panel's width.
@@ -142,6 +143,9 @@ pub const Nanolight = struct {
     ai_text: []const u8 = "",
     /// Bumped each ask so a late answer is ignored.
     ai_gen: u32 = 0,
+    /// Body for the current `pm ` / `PM ` row.
+    pm_body: [@import("pm.zig").max_body]u8 = undefined,
+    pm_body_len: usize = 0,
 
     /// Called as it is shown: the query selected, the keys its own.
     pub fn reveal(s: *Nanolight) void {
@@ -336,6 +340,15 @@ pub const Nanolight = struct {
         if (h == s.built) return;
         s.built = h;
         s.web.n = 0;
+        if (@import("pm.zig").take(q)) |body| {
+            if (body.len <= s.pm_body.len) {
+                @memcpy(s.pm_body[0..body.len], body);
+                s.pm_body_len = body.len;
+            } else s.pm_body_len = 0;
+            s.res.buildPm();
+            s.sel = 0;
+            return;
+        }
         if (@import("pic.zig").take(q)) |needle| {
             if (needle.len == 0) {
                 s.pics.clear();
@@ -403,9 +416,7 @@ pub const Nanolight = struct {
                 return;
             }
         }
-        if (s.host) |host| if (host.suggest) |ask| if (s.suggest_on and suggest.eligible(q) and @import("calc.zig").eval(q) == null) {
-            if (!s.cache.lookup(q, &s.web)) ask(host.ctx, q);
-        };
+        // Default list is apps + Ask Codex only (no Google / Grok / X).
         s.fill();
         // The first row: an app, the answer, or Ask Codex for what was
         // typed; never a completion nobody picked (they come after it).
@@ -509,6 +520,7 @@ pub const Nanolight = struct {
             .clipboard => ui.text(c, "Clipboard History", .{ .size = 13.5, .weight = .medium, .color = p.text }),
             .restart => ui.text(c, "Restart Nanolight", .{ .size = 13.5, .weight = .medium, .color = p.text }),
             .quit => ui.text(c, "Quit Nanolight", .{ .size = 13.5, .weight = .medium, .color = p.text }),
+            .pm => ui.text(c, "发给项目经理", .{ .size = 13.5, .weight = .medium, .color = p.text }),
             .calc, .ai_answer => unreachable,
             .app => {
                 const a = s.index.apps.items[r.app];
@@ -554,7 +566,7 @@ pub const Nanolight = struct {
         }
         ui.spacer(c);
         if (i == s.sel) {
-            ui.text(c, if (r.kind == .app or r.kind == .pic or r.kind == .file) "Open" else if (r.kind == .ai_answer) "Copy" else if (r.kind == .ai_ask) "Ask" else if (r.kind == .restart) "Restart" else if (r.kind == .quit) "Quit" else "Go", .{ .size = 12, .weight = .medium, .color = p.sub });
+            ui.text(c, if (r.kind == .app or r.kind == .pic or r.kind == .file) "Open" else if (r.kind == .ai_answer) "Copy" else if (r.kind == .ai_ask) "Ask" else if (r.kind == .restart) "Restart" else if (r.kind == .quit) "Quit" else if (r.kind == .pm) "Send" else "Go", .{ .size = 12, .weight = .medium, .color = p.sub });
             ui.kbd(c, "↩");
         } else if (i < 9) ui.textf(c, .{ .size = 12, .weight = .medium, .color = p.sub.alpha(0.5), .tabular = true }, "⌘{d}", .{i + 1});
     }
@@ -630,6 +642,7 @@ pub const Nanolight = struct {
             .clipboard => "clipboard",
             .restart => "arrow.clockwise",
             .quit => "power",
+            .pm => "paperplane",
             .calc => "plus.forwardslash.minus",
             .pic => "photo",
             .file => "doc",
@@ -699,6 +712,14 @@ pub const Nanolight = struct {
             },
             .quit => {
                 if (s.host) |h| if (h.quit) |f| f(h.ctx);
+            },
+            .pm => {
+                if (s.pm_body_len == 0) return;
+                const h = s.host orelse return;
+                const f = h.pm orelse return;
+                f(h.ctx, s.pm_body[0..s.pm_body_len]);
+                s.query.clear();
+                h.hide(h.ctx);
             },
             .calc => {
                 var buf: [64]u8 = undefined;

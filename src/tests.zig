@@ -14,6 +14,7 @@ test {
     _ = @import("pic.zig");
     _ = @import("file.zig");
     _ = @import("ai.zig");
+    _ = @import("pm.zig");
     _ = @import("promo_camera.zig");
     _ = @import("single.zig");
     _ = @import("clickthrough.zig");
@@ -259,15 +260,14 @@ test "the panel finds, moves, answers and hands off" {
     press(&t, &.{.{ .command = .insert_newline }});
     try std.testing.expectEqualStrings("3072", t.clipboard.items);
 
-    // Anything else: AI, Google, Grok, X.
+    // Plain query: Ask Codex only (no Google / Grok / X rows).
     press(&t, &.{ .{ .command = .select_all }, .{ .command = .delete_backward }, .{ .insert = "liquid glass" } });
     try std.testing.expect(t.containsText("Ask Codex"));
-    try std.testing.expect(t.containsText("Search X for"));
-    _ = t.shortcut(.{ .key = ui.Shortcut.down });
-    _ = t.shortcut(.{ .key = ui.Shortcut.down });
-    _ = t.shortcut(.{ .key = ui.Shortcut.down });
-    press(&t, &.{.{ .command = .insert_newline }});
-    try std.testing.expectEqualStrings("https://x.com/search?f=live&q=liquid+glass", probe.opened[0..probe.opened_len]);
+    try std.testing.expect(!t.containsText("Search X for"));
+    try std.testing.expect(!t.containsText("Search Google for"));
+    try std.testing.expect(!t.containsText("Ask Grok"));
+    try std.testing.expectEqual(@as(usize, 1), s.res.n);
+    try std.testing.expectEqual(@import("results.zig").Kind.ai_ask, s.res.rows[0].kind);
 
     // Escape clears the query, then closes.
     probe.hidden = false;
@@ -316,7 +316,7 @@ const Web = struct {
     }
 };
 
-test "Google's completions land below, and a search shows in the panel" {
+test "plain queries list Ask Codex only; Google rows are gone" {
     const gpa = std.testing.allocator;
     var ix: Index = .init(gpa);
     defer ix.deinit();
@@ -330,92 +330,23 @@ test "Google's completions land below, and a search shows in the panel" {
     try t.init(gpa, .init(&s, view.Nanolight.view), .{ .width = view.width, .height = view.max_height, .dark = true });
     defer t.deinit();
     t.settle(1);
-    // An address is never asked about; words are.
-    press(&t, &.{.{ .insert = "ziglang.org" }});
+    press(&t, &.{.{ .insert = "liquid gl" }});
+    // Suggestions are no longer requested for the default list.
     try std.testing.expectEqual(@as(usize, 0), web.asked_len);
-    press(&t, &.{ .{ .command = .select_all }, .{ .command = .delete_backward }, .{ .insert = "liquid gl" } });
-    try std.testing.expectEqualStrings("liquid gl", web.asked[0..web.asked_len]);
-    // Return would ask Codex. The selection, moved before the answer
-    // comes, stays on its row, though the completions land above Grok/X.
-    try std.testing.expectEqual(results.Kind.ai_ask, s.res.rows[s.sel].kind);
-    _ = t.shortcut(.{ .key = ui.Shortcut.down });
-    _ = t.shortcut(.{ .key = ui.Shortcut.down });
-    _ = t.shortcut(.{ .key = ui.Shortcut.down });
-    try std.testing.expectEqual(results.Kind.search_x, s.res.rows[s.sel].kind);
+    try std.testing.expectEqual(@as(usize, 1), s.res.n);
+    try std.testing.expectEqual(results.Kind.ai_ask, s.res.rows[0].kind);
+    try std.testing.expect(t.hasText("Ask Codex"));
+    try std.testing.expect(!t.hasText("Google"));
+    try std.testing.expect(!t.hasText("Ask & Search"));
+    // answered() is harmless if a stale completion arrives.
     var said: suggest.List = .{};
     for ([_][]const u8{ "liquid glass", "liquid glass apple" }) |w| said.push(w);
     s.answered("liquid gl", &said);
     t.settle(1);
-    try std.testing.expect(t.hasText("Google"));
-    try std.testing.expect(t.hasText("liquid glass apple"));
-    try std.testing.expectEqual(results.Kind.search_web, s.res.rows[1].kind);
-    try std.testing.expectEqual(results.Kind.suggest, s.res.rows[2].kind);
-    try std.testing.expectEqual(results.Kind.search_x, s.res.rows[s.sel].kind);
-    // The first completion shows faintly in the field; Tab takes it.
-    try std.testing.expect(t.hasText("ass"));
-    try std.testing.expect(t.shortcut(.{ .key = ui.Shortcut.tab }));
-    t.settle(1);
-    try std.testing.expectEqualStrings("liquid glass", s.query.text());
-    press(&t, &.{ .{ .command = .select_all }, .{ .command = .delete_backward }, .{ .insert = "liquid gl" } });
-    // Known at once this time, yet Return still asks Codex for what was
-    // typed, not a completion nobody picked.
-    try std.testing.expectEqual(results.Kind.suggest, s.res.rows[2].kind);
-    try std.testing.expectEqual(results.Kind.ai_ask, s.res.rows[s.sel].kind);
-    // ⌘3 is Google's first completion (⌘1 AI, ⌘2 Google).
-    try std.testing.expect(t.hasText("⌘3"));
-    // One more letter: the answer so far stands in, and nothing is asked
-    // again for words already answered.
-    web.asked_len = 0;
-    press(&t, &.{.{ .insert = "a" }});
-    try std.testing.expectEqualStrings("liquid gla", web.asked[0..web.asked_len]);
-    try std.testing.expect(t.hasText("liquid glass apple"));
-    web.asked_len = 0;
-    press(&t, &.{.{ .command = .delete_backward }});
-    try std.testing.expectEqual(@as(usize, 0), web.asked_len);
-
-    // ⌘4, the second completion: its words in the field, Google's page in the panel.
-    try std.testing.expect(t.shortcut(.{ .key = '4', .cmd = true }));
-    t.settle(1);
-    try std.testing.expectEqualStrings("liquid glass apple", s.query.text());
-    try std.testing.expectEqualStrings("https://www.google.com/search?q=liquid+glass+apple", web.page[0..web.page_len.?]);
-    t.settle(2);
-    try std.testing.expect(t.hasText("Open in Browser"));
-    try std.testing.expectEqual(view.max_height, s.height());
-    try std.testing.expect(!web.probe.hidden);
-    // Escape: the rows again, the page gone.
-    _ = t.shortcut(.{ .key = ui.Shortcut.escape });
-    try std.testing.expect(web.page_len == null);
-    try std.testing.expectEqualStrings("liquid glass apple", s.query.text());
-
-    // Return on words no app matches: Ask Codex (no host.ai in this test).
-    // Move to Google and Return: Google's page; typing takes it away.
-    press(&t, &.{ .{ .command = .select_all }, .{ .command = .delete_backward }, .{ .insert = "pizza" } });
-    try std.testing.expectEqual(results.Kind.ai_ask, s.res.rows[s.sel].kind);
-    press(&t, &.{.{ .command = .insert_newline }});
-    try std.testing.expect(web.page_len == null);
-    while (s.res.rows[s.sel].kind != .search_web) _ = t.shortcut(.{ .key = ui.Shortcut.down });
-    press(&t, &.{.{ .command = .insert_newline }});
-    try std.testing.expectEqualStrings("https://www.google.com/search?q=pizza", web.page[0..web.page_len.?]);
-    press(&t, &.{.{ .insert = "s" }});
-    try std.testing.expect(web.page_len == null);
-    try std.testing.expect(t.hasText("Ask Codex “pizzas”"));
-    try std.testing.expect(t.hasText("Search Google for “pizzas”"));
-
-    // ⌘↩ in the page, and on the row: the browser, and the panel hides.
-    while (s.res.rows[s.sel].kind != .search_web) _ = t.shortcut(.{ .key = ui.Shortcut.down });
-    press(&t, &.{.{ .command = .insert_newline }});
-    try std.testing.expect(web.page_len != null);
-    try std.testing.expect(t.shortcut(.{ .key = ui.Shortcut.enter, .cmd = true }));
-    try std.testing.expectEqualStrings("https://www.google.com/search?q=pizzas", web.probe.opened[0..web.probe.opened_len]);
-    try std.testing.expect(web.probe.hidden);
-    s.reveal();
-    try std.testing.expect(web.page_len == null);
-    web.probe = .{};
-    t.settle(1);
-    while (s.res.rows[s.sel].kind != .search_web) _ = t.shortcut(.{ .key = ui.Shortcut.down });
-    try std.testing.expect(t.shortcut(.{ .key = ui.Shortcut.enter, .cmd = true }));
-    try std.testing.expectEqualStrings("https://www.google.com/search?q=pizzas", web.probe.opened[0..web.probe.opened_len]);
+    try std.testing.expectEqual(@as(usize, 1), s.res.n);
+    try std.testing.expectEqual(results.Kind.ai_ask, s.res.rows[0].kind);
 }
+
 
 const onboard = @import("onboard.zig");
 const shortcut = @import("shortcut.zig");
@@ -502,14 +433,11 @@ test "the panel never outgrows its window, which is never resized" {
         tallest = @max(tallest, s.height());
     }
     try std.testing.expect(tallest <= view.max_height);
-    // "a" fills every app row there is, and Google's completions the
-    // rest: the bound is the real one.
+    // "a" fills every app row plus Ask Codex; still within the bound.
     s.query.set("a");
     s.rebuild();
-    var four: @import("suggest.zig").List = .{};
-    for ([_][]const u8{ "a1", "a2", "a3", "a4" }) |w| four.push(w);
-    s.answered("a", &four);
-    try std.testing.expectEqual(view.max_height, s.height());
+    try std.testing.expect(s.height() <= view.max_height);
+    try std.testing.expectEqual(results.Kind.ai_ask, s.res.rows[s.res.n - 1].kind);
     var o: onboard.Onboard = .{};
     for ([_]onboard.Step{ .key, .try_it, .done }) |step| {
         o.step = step;
@@ -532,7 +460,16 @@ test "reload and quit are launcher commands" {
     s.query.set("restart");
     s.rebuild();
     try std.testing.expectEqual(results.Kind.restart, s.res.rows[0].kind);
+    s.query.set("re");
+    s.rebuild();
+    try std.testing.expectEqual(results.Kind.restart, s.res.rows[0].kind);
+    s.query.set("重启");
+    s.rebuild();
+    try std.testing.expectEqual(results.Kind.restart, s.res.rows[0].kind);
     s.query.set("quit");
+    s.rebuild();
+    try std.testing.expectEqual(results.Kind.quit, s.res.rows[0].kind);
+    s.query.set("退出");
     s.rebuild();
     try std.testing.expectEqual(results.Kind.quit, s.res.rows[0].kind);
 }
@@ -563,13 +500,31 @@ test "img, file and ai prefixes list their own rows" {
     s.built = 1;
     s.rebuild();
     try std.testing.expectEqual(results.Kind.ai_answer, s.res.rows[0].kind);
-    // Plain query (no prefix): Ask Codex is the default Enter row.
+    // Plain query (no prefix): Ask Codex is the only handoff row.
     s.ai_status = .ready;
     s.ai_text = "";
     s.built = 1;
     s.query.set("今天是农历初几 2026");
     s.rebuild();
     try std.testing.expectEqual(results.Kind.ai_ask, s.res.rows[0].kind);
-    try std.testing.expectEqual(results.Kind.search_web, s.res.rows[1].kind);
+    try std.testing.expectEqual(@as(usize, 1), s.res.n);
     try std.testing.expectEqualStrings("今天是农历初几 2026", s.ai_question[0..s.ai_question_len]);
+}
+
+test "pm prefix lists send-to-PM row" {
+    const gpa = std.testing.allocator;
+    var ix: Index = .init(gpa);
+    defer ix.deinit();
+    try ix.add("Safari", "/Applications/Safari.app");
+    var s: view.Nanolight = .{ .index = &ix };
+    defer s.query.deinit();
+    s.query.set("pm 推进 Nanolight");
+    s.rebuild();
+    try std.testing.expectEqual(@as(usize, 1), s.res.n);
+    try std.testing.expectEqual(results.Kind.pm, s.res.rows[0].kind);
+    try std.testing.expectEqualStrings("推进 Nanolight", s.pm_body[0..s.pm_body_len]);
+    s.query.set("PM hello");
+    s.rebuild();
+    try std.testing.expectEqual(results.Kind.pm, s.res.rows[0].kind);
+    try std.testing.expectEqualStrings("hello", s.pm_body[0..s.pm_body_len]);
 }

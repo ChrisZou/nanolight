@@ -2,7 +2,7 @@
 
 <h1 align="center">Nanolight</h1>
 <p align="center"><b>A ⌘Space launcher for the Mac, drawn by <a href="https://github.com/justrach/nanoui">nanoui</a>.</b><br>
-Apps, math, Google, Grok and X: one keystroke away. Native Zig, no Electron, about 1 MB.</p>
+Apps, math, and Ask Codex: one keystroke away. Native Zig, no Electron, about 1 MB.</p>
 
 <p align="center"><a href="https://github.com/justrach/nanolight/raw/refs/heads/main/docs/promo.mp4"><img src="docs/promo-preview.gif" alt="Nanolight in 31 seconds: apps, initials, typos, math, Google suggestions and results in the panel, on a MacBook Air" width="760"></a><br><sub><a href="https://github.com/justrach/nanolight/raw/refs/heads/main/docs/promo.mp4"><b>Watch it with sound →</b></a> · <a href="docs/promo.md">How it was made</a></sub></p>
 
@@ -11,17 +11,15 @@ Apps, math, Google, Grok and X: one keystroke away. Native Zig, no Electron, abo
 ## What it does
 
 - **Finds apps as you type**: whole names, starts of words, initials (`ss` is System Settings), letters in order, and typos (`chorme` is Chrome). What you open often climbs.
-- **Completes inline**: the rest of the top app's name, or of Google's top suggestion, is drawn faintly after the caret. Tab or → takes it; Return never does.
+- **Completes inline**: the rest of the top app's name is drawn faintly after the caret. Tab or → takes it; Return never does.
 - **Does math**: `2^10 * 3` answers 3,072 (and `0xC00`). Return copies it.
-- **Google suggestions**: up to four, under the apps, the words you add in bold. Nothing that reads as an address (a dot, a slash, an @) is sent.
-- **Results in the panel**: Return on a search shows Google's page in the panel itself. Esc goes back to the list, ⌘↩ opens it in your browser, ⌘[ goes back a page.
-- **Ask Grok, search X**, a row away.
 - **Images via Picemon**: type `img ` or `pic ` plus a keyword. Picemon has no public CLI/URL scheme yet, so Nanolight queries its local SQLite index (`~/Library/Application Support/Picemon/picemon.db`) for OCR / description / tags / path. Return opens the file.
 - **Files via FSearch**: type `f `, `find `, or `file ` plus a name. Uses the installed [`fsearch`](https://github.com/noahdunnagan/fsearch) CLI/daemon (`~/.local/bin/fsearch`); Return opens the path.
-- **Ask Codex**: plain queries default to a local Codex ask (Return). Or type `ai ` / `ask ` plus a question. Return on the answer copies it. Google, Grok and X stay in the list below.
+- **Ask Codex**: plain queries default to a local Codex ask (Return). Or type `ai ` / `ask ` plus a question. Return on the answer copies it.
 - **⌘1–⌘9** run a row at once; ↑ ↓ and ⌃N ⌃P move.
 - Lives in the menu bar: no Dock icon, and nothing drawn while it's idle.
-- **Restart or quit from the panel**: type `reload` / `restart`, or `quit`, then Return.
+- **Restart or quit from the panel**: type `reload` / `restart` / `re`…, Chinese `重启` / `重载`, or `quit` / `退出` / `关掉`, then Return.
+- **Message the project manager**: type `pm ` (or `PM `) plus a note, then Return. Nanolight writes UTF-8 to `~/Library/Application Support/Nanolight/outbox/pm-*.txt` for a Grok Bot routine to forward; it does not talk to the bot itself.
 
 ## Sync across Macs (optional)
 
@@ -75,6 +73,7 @@ VERSION=0.1.0 sh macos/package.sh   # the release: signed app, disk image, updat
 | `src/pic.zig` | Picemon image search over its SQLite index |
 | `src/file.zig` | FSearch whole-disk file search (`f ` / `find ` / `file `) |
 | `src/ai.zig` | One-shot Codex Q&A (`ai ` / `ask `) |
+| `src/pm.zig` | Project-manager outbox (`pm ` / `PM `) |
 | `src/preview.zig` | The results page in the panel (WKWebView) |
 | `src/onboard.zig`, `src/shortcut.zig` | The welcome, and which key is free |
 | `src/film.zig`, `src/stage.zig`, `tools/film.sh` | The walkthrough, rendered offscreen |

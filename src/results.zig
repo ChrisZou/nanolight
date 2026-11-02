@@ -1,10 +1,8 @@
 //! What the panel lists for a query, in order: the answer when it is math,
-//! the apps that match it (or, with no query, suggestions), then AI
-//! (local Codex) for exactly what is typed, then Google: a search and
-//! Google's completions under that, a key or two away; last, the query
-//! asked of Grok or searched on X. With no app or answer, Return asks
-//! Codex. Completions land a moment after the rest; the panel keeps the
-//! selection on the row it was on (`Nanolight.answered`).
+//! the apps that match it (or, with no query, suggestions), then Ask Codex
+//! for exactly what is typed. Built-in commands (`reload` / `quit` / `pm `,
+//! and their aliases) list only themselves. Prefix modes (`img` / `f` /
+//! `ai`) keep their own lists. With no app or answer, Return asks Codex.
 const std = @import("std");
 const search = @import("search.zig");
 const calc = @import("calc.zig");
@@ -15,6 +13,8 @@ pub const Kind = enum {
     restart,
     /// Quit Nanolight (`quit`).
     quit,
+    /// Send a note to the project manager via the local outbox (`pm `).
+    pm,
     calc,
     app,
     /// A Picemon image hit (`Row.pic`).
@@ -35,7 +35,7 @@ pub const Kind = enum {
     pub fn label(k: Kind) []const u8 {
         return switch (k) {
             .clipboard => "Clipboard",
-            .restart, .quit => "Nanolight",
+            .restart, .quit, .pm => "Nanolight",
             .calc => "Calculator",
             .app => "Application",
             .pic => "Image",
@@ -51,6 +51,7 @@ pub const Kind = enum {
             .clipboard => "Open Clipboard History",
             .restart => "Restart Nanolight",
             .quit => "Quit Nanolight",
+            .pm => "Send to PM",
             .calc => "Copy Answer",
             .app => "Open Application",
             .pic => "Open Image",
@@ -66,7 +67,7 @@ pub const Kind = enum {
     fn section(k: Kind, suggested: bool) []const u8 {
         return switch (k) {
             .clipboard => "Clipboard",
-            .restart, .quit => "Nanolight",
+            .restart, .quit, .pm => "Nanolight",
             .calc => "Calculator",
             .app => if (suggested) "Suggestions" else "Applications",
             .pic => "Images",
@@ -93,12 +94,12 @@ pub const Row = struct {
 };
 
 pub const max_apps = 6;
-/// Google's completions fill what room is left, up to four.
+/// Google's completions (unused in the default list; kept for preview helpers).
 pub const max_web = 4;
-/// Every app and the four handoff rows leave room for three completions.
-pub const max_rows = max_apps + 4 + 3;
-/// The handoffs that always follow the apps: AI, Google, Grok, X.
-const handoffs = 4;
+/// Apps plus Ask Codex; also caps pic/file lists (their own max is 8).
+pub const max_rows = 8;
+/// The handoff that follows apps: Ask Codex only.
+const handoffs = 1;
 
 pub const Results = struct {
     rows: [max_rows]Row = undefined,
@@ -117,8 +118,8 @@ pub const Results = struct {
     }
 
     /// Lists what `query` finds among `names` (with how often each was
-    /// opened, `boost`) and Google's completions of it (`web`), or
-    /// `suggestions` when the query is empty.
+    /// opened, `boost`), then Ask Codex. `web` is ignored (kept for call sites).
+    /// Empty query lists `suggestions` only.
     pub fn build(r: *Results, query_in: []const u8, names: []const []const u8, boost: []const u16, suggestions: []const u32, web: []const []const u8) void {
         r.n = 0;
         const query = std.mem.trim(u8, query_in, " ");
@@ -127,11 +128,13 @@ pub const Results = struct {
             r.push(.{ .kind = .clipboard });
             return;
         }
-        if (std.ascii.eqlIgnoreCase(query, "reload") or std.ascii.eqlIgnoreCase(query, "restart")) {
+        // Built-in commands: exact, Chinese aliases, or short prefixes
+        // (`re` / `qui`) so they stay discoverable without Ask Codex covering them.
+        if (matchesRestart(query)) {
             r.push(.{ .kind = .restart });
             return;
         }
-        if (std.ascii.eqlIgnoreCase(query, "quit")) {
+        if (matchesQuit(query)) {
             r.push(.{ .kind = .quit });
             return;
         }
@@ -151,14 +154,10 @@ pub const Results = struct {
         const n = search.rank(query, names, boost, &ranked);
         for (ranked[0..n]) |x| r.push(.{ .kind = .app, .app = x.index, .match = x.match });
         if (r.n > 0 and r.rows[0].kind == .calc) return;
-        // Codex for what was typed first, then Google and its completions
-        // (as many as leave room for the rest), then Grok and X.
-        const room = max_rows - r.n - handoffs;
+        _ = web;
+        _ = handoffs;
+        // Ask Codex for what was typed; Google / Grok / X are no longer listed.
         r.push(.{ .kind = .ai_ask });
-        r.push(.{ .kind = .search_web });
-        for (0..@min(web.len, max_web, room)) |i| r.push(.{ .kind = .suggest, .web = @intCast(i) });
-        r.push(.{ .kind = .ask_grok });
-        r.push(.{ .kind = .search_x });
     }
 
 
@@ -188,6 +187,15 @@ pub const Results = struct {
         if (answered) r.push(.{ .kind = .ai_answer }) else r.push(.{ .kind = .ai_ask });
     }
 
+    /// One "发给项目经理" row (from `pm ` / `PM `).
+    pub fn buildPm(r: *Results) void {
+        r.n = 0;
+        r.suggested = false;
+        r.answer = "";
+        r.hex = "";
+        r.push(.{ .kind = .pm });
+    }
+
     fn push(r: *Results, row: Row) void {
         if (r.n == max_rows) return;
         r.rows[r.n] = row;
@@ -209,7 +217,7 @@ pub fn url(buf: []u8, kind: Kind, query: []const u8) []const u8 {
         .ask_grok => "https://grok.com/?q=",
         .search_x => "https://x.com/search?f=live&q=",
         .search_web, .suggest => "https://www.google.com/search?q=",
-        .calc, .app, .clipboard, .restart, .quit, .pic, .file, .ai_ask, .ai_answer => return "",
+        .calc, .app, .clipboard, .restart, .quit, .pm, .pic, .file, .ai_ask, .ai_answer => return "",
     };
     var w: std.Io.Writer = .fixed(buf);
     w.writeAll(base) catch return "";
@@ -229,20 +237,38 @@ pub fn escape(w: *std.Io.Writer, query: []const u8) void {
     }
 }
 
-test "math first, then apps; ask and search only without an answer" {
+
+/// ASCII prefix match: `needle` is a case-insensitive prefix of `haystack`.
+fn startsWithIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len > haystack.len) return false;
+    return std.ascii.eqlIgnoreCase(haystack[0..needle.len], needle);
+}
+
+/// `reload` / `restart`, Chinese aliases, or a 2+ char prefix of those words.
+fn matchesRestart(query: []const u8) bool {
+    if (std.mem.eql(u8, query, "重启") or std.mem.eql(u8, query, "重新启动") or std.mem.eql(u8, query, "重载")) return true;
+    if (query.len < 2) return false;
+    return startsWithIgnoreCase("reload", query) or startsWithIgnoreCase("restart", query);
+}
+
+/// `quit`, Chinese aliases, or a 2+ char prefix of `quit`.
+fn matchesQuit(query: []const u8) bool {
+    if (std.mem.eql(u8, query, "退出") or std.mem.eql(u8, query, "关掉")) return true;
+    if (query.len < 2) return false;
+    return startsWithIgnoreCase("quit", query);
+}
+
+test "math first, then apps; Ask Codex without Google or Ask & Search" {
     const t = std.testing;
     const names = [_][]const u8{ "Safari", "System Settings", "Calculator" };
     var r: Results = .{};
     r.build("saf", &names, &.{}, &.{}, &.{});
     try t.expectEqual(Kind.app, r.rows[0].kind);
     try t.expectEqual(@as(u32, 0), r.rows[0].app);
-    try t.expectEqual(Kind.ai_ask, r.rows[r.n - 4].kind);
-    try t.expectEqual(Kind.search_web, r.rows[r.n - 3].kind);
+    try t.expectEqual(Kind.ai_ask, r.rows[r.n - 1].kind);
+    try t.expectEqual(@as(usize, 2), r.n);
     try t.expectEqualStrings("Applications", r.section(0).?);
     try t.expectEqualStrings("AI", r.section(1).?);
-    try t.expectEqualStrings("Google", r.section(2).?);
-    try t.expectEqualStrings("Ask & Search", r.section(3).?);
-    try t.expect(r.section(4) == null);
     r.build("2^10 * 3", &names, &.{}, &.{}, &.{"ignored"});
     try t.expectEqual(Kind.calc, r.rows[0].kind);
     try t.expectEqualStrings("3,072", r.answer);
@@ -251,32 +277,19 @@ test "math first, then apps; ask and search only without an answer" {
     r.build("", &names, &.{}, &.{ 2, 0 }, &.{});
     try t.expectEqual(@as(usize, 2), r.n);
     try t.expectEqualStrings("Suggestions", r.section(0).?);
-    r.build("liquid glass", &names, &.{}, &.{}, &.{});
-    try t.expectEqual(@as(usize, 4), r.n);
-    // No app: Codex for what was typed comes first.
+    r.build("liquid glass", &names, &.{}, &.{}, &.{ "ignored" });
+    try t.expectEqual(@as(usize, 1), r.n);
     try t.expectEqual(Kind.ai_ask, r.rows[0].kind);
-    try t.expectEqual(Kind.search_web, r.rows[1].kind);
     try t.expectEqualStrings("AI", r.section(0).?);
-    try t.expectEqualStrings("Google", r.section(1).?);
-    try t.expectEqualStrings("Ask & Search", r.section(2).?);
-    // Completions under Google, in the same section, then Grok and X.
+    // Google suggestions are ignored even when supplied.
     r.build("liquid gl", &names, &.{}, &.{}, &.{ "liquid glass", "liquid glue" });
-    try t.expectEqual(@as(usize, 6), r.n);
+    try t.expectEqual(@as(usize, 1), r.n);
     try t.expectEqual(Kind.ai_ask, r.rows[0].kind);
-    try t.expectEqual(Kind.search_web, r.rows[1].kind);
-    try t.expectEqual(Kind.suggest, r.rows[2].kind);
-    try t.expectEqual(@as(u8, 1), r.rows[3].web);
-    try t.expectEqual(Kind.ask_grok, r.rows[4].kind);
-    try t.expect(r.section(2) == null and r.section(3) == null);
-    try t.expectEqualStrings("Ask & Search", r.section(4).?);
-    // A full list of apps still ends with every handoff.
+    // A full list of apps ends with Ask Codex only.
     const many = [_][]const u8{ "Safari", "Mail", "Maps", "Pages", "Calendar", "Calculator", "FaceTime" };
     r.build("a", &many, &.{}, &.{}, &.{ "a1", "a2", "a3", "a4" });
-    try t.expectEqual(max_rows, r.n);
+    try t.expectEqual(@as(usize, max_apps + 1), r.n);
     try t.expectEqual(Kind.ai_ask, r.rows[max_apps].kind);
-    try t.expectEqual(Kind.search_web, r.rows[max_apps + 1].kind);
-    try t.expectEqual(Kind.suggest, r.rows[max_apps + 2].kind);
-    try t.expectEqual(Kind.search_x, r.rows[max_rows - 1].kind);
 }
 
 test "reload, restart and quit are built-in commands" {
@@ -292,6 +305,32 @@ test "reload, restart and quit are built-in commands" {
     r.build("quit", &names, &.{}, &.{}, &.{});
     try t.expectEqual(Kind.quit, r.rows[0].kind);
     try t.expectEqualStrings("Quit Nanolight", Kind.quit.action());
+    // Prefixes and Chinese aliases: only the command row (no Ask Codex).
+    for ([_][]const u8{ "re", "rel", "rest", "  re  ", "重启", "重新启动", "重载" }) |q| {
+        r.build(q, &names, &.{}, &.{}, &.{});
+        try t.expectEqual(@as(usize, 1), r.n);
+        try t.expectEqual(Kind.restart, r.rows[0].kind);
+    }
+    for ([_][]const u8{ "qu", "qui", "退出", "关掉" }) |q| {
+        r.build(q, &names, &.{}, &.{}, &.{});
+        try t.expectEqual(@as(usize, 1), r.n);
+        try t.expectEqual(Kind.quit, r.rows[0].kind);
+    }
+    // Too short / unrelated stays a normal query.
+    r.build("r", &names, &.{}, &.{}, &.{});
+    try t.expect(r.n > 1);
+    try t.expect(r.rows[0].kind != Kind.restart);
+    r.build("q", &names, &.{}, &.{}, &.{});
+    try t.expect(r.rows[0].kind != Kind.quit);
+}
+
+
+test "pm is a built-in command row" {
+    var r: Results = .{};
+    r.buildPm();
+    try std.testing.expectEqual(@as(usize, 1), r.n);
+    try std.testing.expectEqual(Kind.pm, r.rows[0].kind);
+    try std.testing.expectEqualStrings("Send to PM", Kind.pm.action());
 }
 
 test "queries are escaped into the address" {

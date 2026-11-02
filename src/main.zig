@@ -79,7 +79,7 @@ const Live = struct {
     ai_job: ?*AiJob = null,
 
     fn host(l: *Live) view.Host {
-        return .{ .ctx = l, .open = open, .hide = hide, .resize = resize, .suggest = ask, .preview = showPage, .pic = picSearch, .file = fileSearch, .ai = aiAsk, .restart = restartSelf, .quit = quitSelf };
+        return .{ .ctx = l, .open = open, .hide = hide, .resize = resize, .suggest = ask, .preview = showPage, .pic = picSearch, .file = fileSearch, .ai = aiAsk, .restart = restartSelf, .quit = quitSelf, .pm = pmSend };
     }
 
     fn open(ctx: *anyopaque, target: []const u8) void {
@@ -111,6 +111,18 @@ const Live = struct {
     fn quitSelf(ctx: *anyopaque) void {
         const l: *Live = @ptrCast(@alignCast(ctx));
         l.app.quit();
+    }
+
+    fn pmSend(ctx: *anyopaque, body: []const u8) void {
+        const l: *Live = @ptrCast(@alignCast(ctx));
+        var path_buf: [640]u8 = undefined;
+        const n = @import("pm.zig").writeOutbox(l.app.io, l.home, body, &path_buf);
+        if (n == 0) {
+            std.log.warn("nanolight: pm outbox write failed", .{});
+            return;
+        }
+        std.log.info("nanolight: pm outbox {s}", .{path_buf[0..n]});
+        @import("pm.zig").notify(l.app.gpa, l.app.io);
     }
 
     // ----- sync (account.zig) -----
