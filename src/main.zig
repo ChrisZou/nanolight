@@ -35,10 +35,9 @@ pub fn applyChoice(ctx: *anyopaque, choice: shortcut.Choice) void {
 pub fn loginItem(ctx: *anyopaque, set: ?bool) bool {
     return Live.login(ctx, set);
 }
-/// The version an automatic update restarted into, for the new copy to say.
+/// The version 0.1.6 and before left when they restarted into an update
+/// themselves (nanoui's updater does it now, `autoRestart`).
 const updated_key = "nanolight.updated";
-/// How long the panel must have been away before an update restarts it.
-const auto_update_after_ms = 10 * 1000;
 /// When this Mac last changed its key or suggestions (settings.zig's `at`).
 const sync_at_key = "nanolight.sync.at";
 
@@ -259,43 +258,16 @@ pub const Live = struct {
     fn updated(ctx: *anyopaque) void {
         const l: *Live = @ptrCast(@alignCast(ctx));
         menu(l);
-        l.autoUpdate();
-    }
-
-    /// A newer version is downloaded and checked: Nanolight restarts into it
-    /// on its own once the panel has been away a while. (A menu bar app
-    /// almost never quits, so installing at quit, as nanoui's updater
-    /// otherwise does, would mean never.) Called as one is ready and each
-    /// time the panel goes away.
-    fn autoUpdate(l: *Live) void {
-        const u = l.updater orelse return;
-        if (u.ready() == null) return;
-        nanoui.App.after(auto_update_after_ms, l, struct {
-            fn f(c: ?*anyopaque) callconv(.c) void {
-                const live: *Live = @ptrCast(@alignCast(c.?));
-                live.restartIfAway();
-            }
-        }.f);
-    }
-
-    fn restartIfAway(l: *Live) void {
-        const u = l.updater orelse return;
-        const v = u.ready() orelse return;
-        // In use: the next time it goes away (`keyChanged`) asks again.
-        if (l.window) |w| if (w.isVisible()) return;
-        // The new copy starts quietly and says it was updated (main).
-        l.kv.set(updated_key, v) catch {};
-        if (u.restart()) l.app.quit() else l.kv.remove(updated_key);
     }
 
     /// The panel became, or stopped being, the key window (it hides as it
-    /// stops): an update waiting may go in, and an "Updated" note is done.
+    /// stops): an "Updated" note is done. (An update waiting goes in once
+    /// the panel has been away a while: nanoui's `autoRestart`.)
     fn keyChanged(ctx: *anyopaque, w: *nanoui.Window) void {
         const l: *Live = @ptrCast(@alignCast(ctx));
         if (w.isFocused()) return;
         l.through.stop();
         l.s.note = "";
-        l.autoUpdate();
     }
 
     fn hide(ctx: *anyopaque) void {
@@ -529,6 +501,10 @@ pub fn main(init: std.process.Init) !void {
     defer if (updater) |u| u.deinit();
     if (updater) |u| if (u.phase.load(.acquire) != .off) {
         live.updater = u;
+        // A menu bar app almost never quits, so installing at quit would
+        // mean never: it restarts into an update once the panel has been
+        // away 10 s, in the background, and comes back as it was.
+        u.autoRestart(app, .{ .idle_ms = 10 * 1000 });
     };
     // Signed in before: synced now. Signing in is from the menu.
     live.acct = .{ .gpa = init.gpa, .kv = kv, .hooks = live.accountHooks() };
@@ -537,10 +513,13 @@ pub fn main(init: std.process.Init) !void {
     // Restarted by an automatic update: quietly, the panel saying so the
     // next time it opens. Otherwise launching shows the panel.
     var note_buf: [64]u8 = undefined;
-    if (kv.get(init.gpa, updated_key) catch null) |v| {
-        defer init.gpa.free(v);
-        kv.remove(updated_key);
-        s.note = std.fmt.bufPrint(&note_buf, "Updated to {s}", .{v}) catch "Updated";
+    const old = kv.get(init.gpa, updated_key) catch null;
+    defer if (old) |v| init.gpa.free(v);
+    if (old != null) kv.remove(updated_key);
+    const restarted = if (live.updater) |u| u.updatedFrom() != null else false;
+    if (restarted or old != null) {
+        const now = if (live.updater) |u| u.current else old.?;
+        s.note = std.fmt.bufPrint(&note_buf, "Updated to {s}", .{now}) catch "Updated";
     } else Live.toggle(&live);
     try app.run();
 }
