@@ -1,0 +1,585 @@
+//! The launcher panel: the query, then what it finds in sections, then a
+//! footer naming what Return does. Neutral glass with a hairline rim,
+//! 40-point rows, the selection a grey step that slides between them,
+//! matched letters drawn stronger. Nothing moves while nothing happens:
+//! frames come from keys, and from the height and selection settling.
+const std = @import("std");
+const nanoui = @import("nanoui");
+const ui = nanoui.ui;
+const motion = ui.motion;
+const Index = @import("apps.zig").Index;
+const results = @import("results.zig");
+const suggest = @import("suggest.zig");
+const Row = results.Row;
+
+/// What the panel asks of whatever shows it (the window, or the film).
+pub const Host = struct {
+    ctx: *anyopaque,
+    /// Opens an app's path or a URL.
+    open: *const fn (ctx: *anyopaque, target: []const u8) void,
+    hide: *const fn (ctx: *anyopaque) void,
+    /// The panel's height changed: a window follows it.
+    resize: ?*const fn (ctx: *anyopaque, h: f32) void = null,
+    /// Google's completions of a query aren't known: ask for them, and
+    /// answer with `Nanolight.answered`. Without it, none are listed.
+    suggest: ?*const fn (ctx: *anyopaque, query: []const u8) void = null,
+    /// Shows a search's page in the panel, over `webArea`; null takes it
+    /// away. Without it, searches open in the browser.
+    preview: ?*const fn (ctx: *anyopaque, url: ?[]const u8) void = null,
+};
+
+pub const width: f32 = 680;
+
+/// The app's icon (icon.png, made smaller), for the panel and the film.
+pub const icon_png = @embedFile("icon-256.png");
+
+/// The app's icon, `size` points square.
+pub fn appIcon(c: *ui.Context, size: f32) void {
+    _ = ui.image(c, .{ .key = "nanolight-icon", .bytes = icon_png, .max_width = size, .max_height = size, .radius = 0, .scale = 2 });
+}
+const header_h = 58;
+const row_h = 40;
+const calc_h = 92;
+const section_h = 28;
+const footer_h = 38;
+const list_pad = 6;
+/// The room a window leaves round the panel for its shadow (`Nanolight.margin`).
+pub const shadow_margin: f32 = 40;
+/// The tallest the panel gets: every app row, the three web rows and
+/// Google's completions, under three section heads (math lists fewer), or
+/// a search's page. The window is this tall.
+pub const max_height: f32 = header_h + footer_h + 2 + list_pad * 2 + results.max_rows * row_h + 3 * section_h;
+
+/// Where a search's page goes in a panel `h` tall: from `y` down from its
+/// top, `h` tall, between the header and the footer, the panel's width.
+pub fn webArea(h: f32) struct { y: f32, h: f32 } {
+    return .{ .y = header_h + 1, .h = @max(0, h - header_h - footer_h - 2) };
+}
+/// Opening and growing: snappy, a touch under critical damping.
+pub const spring: motion.Spring = .{ .stiffness = 320, .damping = 32 };
+const slide: motion.Spring = .{ .stiffness = 700, .damping = 52 };
+
+pub const Palette = struct { text: ui.Color, sub: ui.Color, hair: ui.Color, sel: ui.Color, rim: ui.Color, tile: ui.Color, fill: ui.Color };
+
+pub fn palette(dark: bool) Palette {
+    return if (dark) .{
+        .text = .hex(0xeeeeee),
+        .sub = .hex(0xb5b5b5),
+        .hair = ui.Color.white.alpha(0.12),
+        .sel = ui.Color.white.alpha(0.16),
+        .rim = ui.Color.white.alpha(0.1),
+        .tile = ui.Color.white.alpha(0.09),
+        .fill = ui.Color.hex(0x1a1a1a).alpha(0.5),
+    } else .{
+        .text = .hex(0x292929),
+        .sub = .hex(0x6f6f6f),
+        .hair = ui.Color.black.alpha(0.09),
+        .sel = ui.Color.black.alpha(0.08),
+        .rim = ui.Color.black.alpha(0.05),
+        .tile = ui.Color.black.alpha(0.05),
+        .fill = ui.Color.white.alpha(0.45),
+    };
+}
+
+pub const Nanolight = struct {
+    index: *Index,
+    query: ui.TextBuffer = .{},
+    res: results.Results = .{},
+    sel: usize = 0,
+    /// The query the rows were built for.
+    built: u64 = 1,
+    host: ?Host = null,
+    /// Draws its own Liquid Glass (over a desktop nanoui painted, as the
+    /// film does); otherwise the window's system glass is under it.
+    own_glass: bool = false,
+    /// Clear room round the panel in its window, for its shadow.
+    margin: f32 = 0,
+    /// Each showing gets a new one: the panel comes in again.
+    shown: u32 = 0,
+    copied_at: f64 = -10,
+    kv: ?nanoui.kv.Store = null,
+    spans: [results.max_rows][16]ui.Span = undefined,
+    url_buf: [1024]u8 = undefined,
+    last_h: f32 = 0,
+    /// The query as it was shown: selected, so no completion after it yet.
+    revealed: u64 = 0,
+    /// The first-run welcome, drawn in the panel while it is active.
+    onboard: ?*@import("onboard.zig").Onboard = null,
+    /// Google's completions: whether to ask for them, those listed, and
+    /// the answers so far.
+    suggest_on: bool = true,
+    web: suggest.List = .{},
+    cache: suggest.Cache = .{},
+    /// A search's page is in the panel, for the query as it was then.
+    previewing: bool = false,
+    preview_q: u64 = 0,
+    preview_buf: [1024]u8 = undefined,
+    preview_url: []const u8 = "",
+
+    /// Called as it is shown: the query selected, the keys its own.
+    pub fn reveal(s: *Nanolight) void {
+        s.back();
+        s.shown +%= 1;
+        // Suggestions follow what was opened since.
+        s.built = 1;
+        s.revealed = std.hash.Wyhash.hash(0, s.query.text());
+        s.query.want_selection = .{ 0, s.query.text().len };
+        s.query.focus();
+    }
+
+    /// The panel's height for the rows it lists.
+    pub fn height(s: *const Nanolight) f32 {
+        if (s.previewing) return max_height;
+        var h: f32 = header_h + footer_h + 1;
+        if (s.res.n == 0) return h;
+        h += 1 + list_pad * 2;
+        for (s.res.slice(), 0..) |r, i| {
+            h += if (r.kind == .calc) calc_h else row_h;
+            if (s.res.section(i) != null) h += section_h;
+        }
+        return h;
+    }
+
+    /// The window's view: the panel, `margin` in from the window's edges.
+    pub fn view(s: *Nanolight, c: *ui.Context) void {
+        ui.key(c, c.print("panel-{d}", .{s.shown}));
+        const f = motion.frame(c, .{ .initial = .{ .opacity = 0, .y = -6, .scale = 0.985 }, .transition = .{ .spring = spring } });
+        const root = ui.div(c).wFull().p(s.margin).motion(f);
+        defer root.end();
+        s.panel(c);
+    }
+
+    pub fn panel(s: *Nanolight, c: *ui.Context) void {
+        const p = palette(c.theme.dark);
+        const shell = ui.div(c).column().w(width).rounded(18).border(p.hair).clip();
+        if (s.own_glass) {
+            _ = shell.glass(.{ .tint = if (c.theme.dark) ui.Color.black.alpha(0.42) else ui.Color.white.alpha(0.5) })
+                .shadows(&.{ .{ .color = .{ .a = 0.22 }, .blur = 4, .y = 1 }, .{ .color = .{ .a = 0.28 }, .blur = 40, .y = 18 } });
+        } else {
+            // The system's shadow is off (its outline drew a black ring
+            // round the panel): this one is soft, and outside the panel
+            // only, so the glass under it stays clear.
+            _ = shell.bg(p.fill).shadows(&.{
+                .{ .color = .{ .a = 0.16 }, .blur = 3, .y = 1, .knockout = true },
+                .{ .color = .{ .a = 0.24 }, .blur = 28, .y = 12, .knockout = true },
+            });
+        }
+        defer shell.end();
+        if (s.onboard) |o| if (o.active) {
+            const h = s.follow(c, o.height());
+            const body = ui.div(c).column().wFull().h(h).clip();
+            defer body.end();
+            o.view(c, s, p);
+            return;
+        };
+
+        s.keys(c);
+        const submitted = s.header(c, p);
+        s.rebuild();
+        // Typing takes the page away: the rows are for the new words.
+        if (s.previewing and std.hash.Wyhash.hash(0, s.query.text()) != s.preview_q) s.back();
+        if (submitted) s.activate(c);
+        const h = s.follow(c, s.height());
+        {
+            const body = ui.div(c).column().wFull().h(h - header_h).clip();
+            defer body.end();
+            if (s.previewing) {
+                // Under the page, until it draws.
+                ui.div(c).wFull().h(1).bg(p.hair).end();
+                const wait = ui.div(c).wFull().h(webArea(h).h).center();
+                defer wait.end();
+                ui.text(c, "Searching Google…", .{ .size = 13, .color = p.sub.alpha(0.8) });
+            } else if (s.res.n > 0) {
+                ui.div(c).wFull().h(1).bg(p.hair).end();
+                s.list(c, p);
+            }
+            ui.spacer(c);
+            s.footer(c, p);
+        }
+    }
+
+    /// The panel's height, springing to `target`; a window follows it.
+    pub fn follow(s: *Nanolight, c: *ui.Context, target: f32) f32 {
+        const h = motion.number(c, "panel-h", @min(target, max_height), .{ .spring = spring });
+        if (s.host) |host| if (host.resize) |f| if (@abs(h - s.last_h) > 0.25) {
+            s.last_h = h;
+            f(host.ctx, h);
+        };
+        return h;
+    }
+
+    /// Arrows, ^N/^P and Escape, before the field sees them.
+    fn keys(s: *Nanolight, c: *ui.Context) void {
+        const S = ui.Shortcut;
+        if (s.previewing) {
+            if (c.shortcut(.{ .key = S.enter, .cmd = true })) s.go(s.preview_url);
+            if (c.shortcut(.{ .key = S.escape })) s.back();
+            return;
+        }
+        // ⌘↩: a search in the browser rather than in the panel.
+        if (c.shortcut(.{ .key = S.enter, .cmd = true })) s.activateOut(c);
+        // Tab takes the faint completion, as → does.
+        const more = s.completion();
+        if (more.len > 0 and c.shortcut(.{ .key = S.tab })) s.take(more);
+        const n = s.res.n;
+        if (c.shortcut(.{ .key = S.down }) or c.shortcut(.{ .key = 'n', .ctrl = true })) {
+            if (n > 0) s.sel = (s.sel + 1) % n;
+        }
+        if (c.shortcut(.{ .key = S.up }) or c.shortcut(.{ .key = 'p', .ctrl = true })) {
+            if (n > 0) s.sel = (s.sel + n - 1) % n;
+        }
+        // ⌘1…⌘9: the row of that number, at once.
+        for (0..@min(n, 9)) |k| if (c.shortcut(.{ .key = @intCast('1' + k), .cmd = true })) {
+            s.sel = k;
+            s.activate(c);
+        };
+        if (c.shortcut(.{ .key = S.escape })) {
+            if (s.query.text().len > 0) s.query.clear() else if (s.host) |h| h.hide(h.ctx);
+        }
+    }
+
+    fn header(s: *Nanolight, c: *ui.Context, p: Palette) bool {
+        const bar = ui.div(c).row().wFull().h(header_h).px(18).gap(12).itemsCenter();
+        defer bar.end();
+        ui.icon(c, "magnifyingglass", .{ .size = 19, .weight = .medium, .color = p.sub, .frame = 22 });
+        s.rebuild();
+        const r = ui.textField(c, &s.query, .{
+            .suggestion = s.completion(),
+            .bare = true,
+            .size = 21,
+            .width = .fill,
+            .placeholder = "Search apps, do math, ask Grok…",
+            .placeholder_color = p.sub.alpha(0.75),
+            .color = p.text,
+        });
+        return r.submitted;
+    }
+
+    /// What the query is the start of, drawn faintly after the caret; →
+    /// or Tab takes it. The top app's name when one is listed first ("saf"
+    /// → "ari"), else Google's first completion that goes on from the
+    /// words ("liquid gl" → "ass"), so it is one key away, not a walk
+    /// down the rows. Return never takes it: Return is the selected row.
+    fn completion(s: *const Nanolight) []const u8 {
+        const q = s.query.text();
+        if (q.len == 0 or s.res.n == 0 or std.hash.Wyhash.hash(0, q) == s.revealed) return "";
+        const r = s.res.rows[0];
+        if (r.kind == .app) {
+            const name = s.index.apps.items[r.app].name;
+            if (name.len <= q.len or !std.ascii.startsWithIgnoreCase(name, q)) return "";
+            return name[q.len..];
+        }
+        if (r.kind != .search_web) return "";
+        for (0..s.web.n) |i| {
+            const w = s.web.get(i);
+            if (w.len > q.len and std.ascii.startsWithIgnoreCase(w, q)) return w[q.len..];
+        }
+        return "";
+    }
+
+    /// The completion `more` added to the query, the caret after it.
+    fn take(s: *Nanolight, more: []const u8) void {
+        var buf: [suggest.max_len * 2]u8 = undefined;
+        const q = s.query.text();
+        if (q.len + more.len > buf.len) return;
+        @memcpy(buf[0..q.len], q);
+        @memcpy(buf[q.len..][0..more.len], more);
+        const len = q.len + more.len;
+        s.query.set(buf[0..len]);
+        s.query.want_selection = .{ len, len };
+    }
+
+    /// The rows for the query, if it changed since they were built: with
+    /// what is known of Google's completions of it, asked for if not all.
+    pub fn rebuild(s: *Nanolight) void {
+        const q = s.query.text();
+        const h = std.hash.Wyhash.hash(0, q);
+        if (h == s.built) return;
+        s.built = h;
+        s.web.n = 0;
+        if (s.host) |host| if (host.suggest) |ask| if (s.suggest_on and suggest.eligible(q) and @import("calc.zig").eval(q) == null) {
+            if (!s.cache.lookup(q, &s.web)) ask(host.ctx, q);
+        };
+        s.fill();
+        // The first row: an app, the answer, or the search for what was
+        // typed; never a completion nobody picked (they come after it).
+        s.sel = 0;
+    }
+
+    fn fill(s: *Nanolight) void {
+        var sug: [results.max_apps]u32 = undefined;
+        const ns = s.index.suggestions(&sug);
+        var web: [suggest.max_rows][]const u8 = undefined;
+        s.res.build(s.query.text(), s.index.names.items, s.index.launches.items, sug[0..ns], s.web.slices(&web));
+    }
+
+    /// Google's completions of `typed` (what `Host.suggest` asked): kept,
+    /// and listed if it is still what is typed. The selection stays on the
+    /// row it was on, wherever that row now is: Return a moment after
+    /// typing does what the panel showed, not a completion that just came.
+    pub fn answered(s: *Nanolight, typed: []const u8, said: *const suggest.List) void {
+        s.cache.put(typed, said);
+        if (!suggest.same(typed, s.query.text())) return;
+        const was: ?Row = if (s.sel < s.res.n) s.res.rows[s.sel] else null;
+        var was_text: [suggest.max_len]u8 = undefined;
+        var was_len: usize = 0;
+        if (was) |r| if (r.kind == .suggest) {
+            const w = s.web.get(r.web);
+            @memcpy(was_text[0..w.len], w);
+            was_len = w.len;
+        };
+        s.web = said.*;
+        s.fill();
+        s.sel = 0;
+        const r = was orelse return;
+        for (s.res.slice(), 0..) |now, i| {
+            const same_row = now.kind == r.kind and switch (r.kind) {
+                .app => now.app == r.app,
+                .suggest => suggest.same(s.web.get(now.web), was_text[0..was_len]),
+                else => true,
+            };
+            if (same_row) {
+                s.sel = i;
+                return;
+            }
+        }
+    }
+
+    fn list(s: *Nanolight, c: *ui.Context, p: Palette) void {
+        const box = ui.div(c).column().wFull().p(list_pad);
+        defer box.end();
+        // Where the selected row is, so the highlight can slide to it.
+        var y: f32 = 0;
+        var sel_y: f32 = 0;
+        var sel_h: f32 = row_h;
+        for (s.res.slice(), 0..) |r, i| {
+            if (s.res.section(i) != null) y += section_h;
+            const rh: f32 = if (r.kind == .calc) calc_h else row_h;
+            if (i == s.sel) {
+                sel_y = y;
+                sel_h = rh;
+            }
+            y += rh;
+        }
+        // A new list: the highlight is there at once; moving in it, it slides.
+        const fresh = c.print("{d}", .{s.built});
+        const hy = motion.number(c, fresh, sel_y, .{ .spring = slide });
+        const hh = motion.number(c, c.print("{d}h", .{s.built}), sel_h, .{ .spring = slide });
+        ui.div(c).absolute().offset(0, hy).w(width - list_pad * 2).h(hh).rounded(10).bg(p.sel).border(p.rim).end();
+        for (s.res.slice(), 0..) |r, i| {
+            if (s.res.section(i)) |name| {
+                const head = ui.div(c).row().wFull().h(section_h).px(12).pb(6).itemsEnd();
+                defer head.end();
+                ui.text(c, name, .{ .size = 11.5, .weight = .semibold, .color = p.sub.alpha(0.85) });
+            }
+            s.row(c, p, i, r);
+        }
+    }
+
+    fn row(s: *Nanolight, c: *ui.Context, p: Palette, i: usize, r: Row) void {
+        const big = r.kind == .calc;
+        const d = ui.div(c).row().wFull().h(if (big) calc_h else row_h).px(10).gap(12).itemsCenter().control();
+        defer d.end();
+        if (d.clicked()) {
+            s.sel = i;
+            s.activate(c);
+        }
+        if (big) return s.calcCard(c, p);
+        s.tile(c, p, r);
+        const q = s.query.text();
+        switch (r.kind) {
+            .calc => unreachable,
+            .app => {
+                const a = s.index.apps.items[r.app];
+                ui.richText(c, a.name, s.highlight(i, r, p), .{ .size = 13.5, .weight = .medium, .color = p.text.alpha(0.82) });
+                ui.text(c, a.folder, .{ .size = 12, .color = p.sub.alpha(0.8) });
+            },
+            .suggest => {
+                const w = s.web.get(r.web);
+                ui.richText(c, w, s.added(i, w, p), .{ .size = 13.5, .color = p.text.alpha(0.72), .truncate = .ellipsis });
+            },
+            .ask_grok, .search_x, .search_web => {
+                const verb = switch (r.kind) {
+                    .ask_grok => "Ask Grok",
+                    .search_x => "Search X for",
+                    else => "Search Google for",
+                };
+                ui.textf(c, .{ .size = 13.5, .weight = .medium, .color = p.text, .truncate = .ellipsis }, "{s} “{s}”", .{ verb, std.mem.trim(u8, q, " ") });
+                ui.text(c, switch (r.kind) {
+                    .ask_grok => "grok.com",
+                    .search_x => "x.com · Latest",
+                    else => "google.com",
+                }, .{ .size = 12, .color = p.sub.alpha(0.8) });
+            },
+        }
+        ui.spacer(c);
+        if (i == s.sel) {
+            ui.text(c, if (r.kind == .app) "Open" else "Go", .{ .size = 12, .weight = .medium, .color = p.sub });
+            ui.kbd(c, "↩");
+        } else if (i < 9) ui.textf(c, .{ .size = 12, .weight = .medium, .color = p.sub.alpha(0.5), .tabular = true }, "⌘{d}", .{i + 1});
+    }
+
+    /// The math as Raycast shows it: the expression, an arrow, the answer,
+    /// each over a small label; the answer's says Copied once it is.
+    fn calcCard(s: *Nanolight, c: *ui.Context, p: Palette) void {
+        const half = (width - list_pad * 2 - 20 - 32 - 24) / 2;
+        {
+            const l = ui.div(c).column().w(half).itemsCenter().gap(6);
+            defer l.end();
+            ui.text(c, std.mem.trim(u8, s.query.text(), " ="), .{ .size = 20, .weight = .medium, .color = p.text.alpha(0.8), .tabular = true });
+            chip(c, p, "Expression", null);
+        }
+        {
+            const arrow = ui.div(c).size(32, 32).roundedFull().bg(p.tile).center();
+            defer arrow.end();
+            ui.icon(c, "arrow.right", .{ .size = 13, .weight = .semibold, .color = p.sub });
+        }
+        const r = ui.div(c).column().w(half).itemsCenter().gap(6);
+        defer r.end();
+        ui.text(c, s.res.answer, .{ .size = 28, .weight = .semibold, .color = p.text, .tabular = true, .tracking = -0.3 });
+        if (c.time - s.copied_at < 1.4) {
+            c.animationFrame();
+            chip(c, p, "Copied", c.theme.success);
+        } else chip(c, p, if (s.res.hex.len > 0) c.print("Result · {s}", .{s.res.hex}) else "Result", null);
+    }
+
+    fn chip(c: *ui.Context, p: Palette, str: []const u8, tone: ?ui.Color) void {
+        const d = ui.div(c).row().gap(4).px(8).h(20).itemsCenter().rounded(6).bg(if (tone) |t| t.alpha(0.16) else p.tile);
+        defer d.end();
+        if (tone) |t| ui.icon(c, "checkmark", .{ .size = 10, .weight = .bold, .color = t });
+        ui.text(c, str, .{ .size = 11, .weight = .medium, .color = tone orelse p.sub, .tabular = true });
+    }
+
+    /// The row's picture: the app's icon, or a symbol on a quiet tile.
+    fn tile(s: *Nanolight, c: *ui.Context, p: Palette, r: Row) void {
+        if (r.kind == .app) if (s.index.icon(r.app)) |png| {
+            const box = ui.div(c).size(26, 26).center();
+            defer box.end();
+            _ = ui.image(c, .{ .key = s.index.apps.items[r.app].path, .bytes = png, .max_width = 26, .max_height = 26, .radius = 0, .scale = 1 });
+            return;
+        };
+        const big = r.kind == .calc;
+        const side: f32 = if (big) 34 else 26;
+        const box = ui.div(c).size(side, side).rounded(if (big) 9 else 7).bg(p.tile).center();
+        defer box.end();
+        if (r.kind == .search_x) {
+            ui.text(c, "𝕏", .{ .size = 15, .weight = .bold, .color = p.text });
+            return;
+        }
+        ui.icon(c, switch (r.kind) {
+            .calc => "plus.forwardslash.minus",
+            .ask_grok => "sparkles",
+            .search_web => "globe",
+            .suggest => "magnifyingglass",
+            else => "app.dashed",
+        }, .{ .size = if (big) 16 else 13, .weight = .medium, .color = p.text });
+    }
+
+    /// The matched letters, full strength and heavier.
+    fn highlight(s: *Nanolight, i: usize, r: Row, p: Palette) []const ui.Span {
+        const hits = r.match.matched();
+        var n: usize = 0;
+        var k: usize = 0;
+        while (k < hits.len and n < s.spans[i].len) {
+            var end = k + 1;
+            while (end < hits.len and hits[end] == hits[end - 1] + 1) end += 1;
+            s.spans[i][n] = .{ .start = hits[k], .end = @as(u32, hits[end - 1]) + 1, .color = p.text, .weight = .semibold };
+            n += 1;
+            k = end;
+        }
+        return s.spans[i][0..n];
+    }
+
+    /// A completion as a search box shows it: the words typed plain, what
+    /// it adds stronger.
+    fn added(s: *Nanolight, i: usize, w: []const u8, p: Palette) []const ui.Span {
+        const q = std.mem.trim(u8, s.query.text(), " ");
+        if (q.len == 0 or w.len <= q.len or !std.ascii.startsWithIgnoreCase(w, q)) return &.{};
+        s.spans[i][0] = .{ .start = @intCast(q.len), .end = @intCast(w.len), .color = p.text, .weight = .semibold };
+        return s.spans[i][0..1];
+    }
+
+    fn footer(s: *Nanolight, c: *ui.Context, p: Palette) void {
+        ui.div(c).wFull().h(1).bg(p.hair).end();
+        const bar = ui.div(c).row().wFull().h(footer_h).px(16).gap(8).itemsCenter();
+        defer bar.end();
+        appIcon(c, 16);
+        ui.textf(c, .{ .size = 12, .weight = .medium, .color = p.sub.alpha(0.8) }, "Nanolight · {d} apps", .{s.index.apps.items.len});
+        ui.spacer(c);
+        if (s.previewing) {
+            ui.text(c, "Open in Browser", .{ .size = 12, .weight = .medium, .color = p.text.alpha(0.85) });
+            ui.kbd(c, "⌘↩");
+            ui.div(c).w(1).h(14).bg(p.hair).end();
+            ui.text(c, "Back", .{ .size = 12, .color = p.sub.alpha(0.8) });
+            ui.kbd(c, "esc");
+            return;
+        }
+        if (s.res.n == 0) return;
+        ui.text(c, s.res.rows[@min(s.sel, s.res.n - 1)].kind.action(), .{ .size = 12, .weight = .medium, .color = p.text.alpha(0.85) });
+        ui.kbd(c, "↩");
+        ui.div(c).w(1).h(14).bg(p.hair).end();
+        ui.text(c, "Close", .{ .size = 12, .color = p.sub.alpha(0.8) });
+        ui.kbd(c, "esc");
+    }
+
+    /// Return on the selected row.
+    pub fn activate(s: *Nanolight, c: *ui.Context) void {
+        if (s.res.n == 0) return;
+        const r = s.res.rows[@min(s.sel, s.res.n - 1)];
+        switch (r.kind) {
+            .calc => {
+                var buf: [64]u8 = undefined;
+                const v = @import("calc.zig").eval(s.query.text()) orelse return;
+                c.clipboard.write(c.clipboard.ctx, @import("calc.zig").format(&buf, v, false));
+                s.copied_at = c.time;
+                return;
+            },
+            .app => {
+                s.index.opened(r.app, s.kv);
+                s.go(s.index.apps.items[r.app].path);
+            },
+            .ask_grok, .search_x => s.go(results.url(&s.url_buf, r.kind, s.query.text())),
+            .search_web => s.search(s.query.text()),
+            .suggest => {
+                // Its words fill the field, as a search box's would.
+                s.query.set(s.web.get(r.web));
+                s.search(s.query.text());
+            },
+        }
+    }
+
+    /// ⌘↩ on the selected row: a search opens in the browser.
+    fn activateOut(s: *Nanolight, c: *ui.Context) void {
+        if (s.res.n == 0) return;
+        const r = s.res.rows[@min(s.sel, s.res.n - 1)];
+        switch (r.kind) {
+            .search_web => s.go(results.url(&s.url_buf, .search_web, s.query.text())),
+            .suggest => s.go(results.url(&s.url_buf, .search_web, s.web.get(r.web))),
+            else => s.activate(c),
+        }
+    }
+
+    /// Google's page for `words`, in the panel if the host can show it.
+    fn search(s: *Nanolight, words: []const u8) void {
+        const h = s.host orelse return;
+        const u = results.url(&s.preview_buf, .search_web, words);
+        const show = h.preview orelse return s.go(u);
+        s.preview_url = u;
+        s.previewing = true;
+        s.preview_q = std.hash.Wyhash.hash(0, s.query.text());
+        show(h.ctx, u);
+    }
+
+    /// The rows again, the page gone.
+    pub fn back(s: *Nanolight) void {
+        if (!s.previewing) return;
+        s.previewing = false;
+        if (s.host) |h| if (h.preview) |f| f(h.ctx, null);
+    }
+
+    fn go(s: *Nanolight, target: []const u8) void {
+        const h = s.host orelse return;
+        h.open(h.ctx, target);
+        h.hide(h.ctx);
+    }
+};

@@ -1,0 +1,205 @@
+//! What the panel lists for a query, in order: the answer when it is math,
+//! the apps that match it (or, with no query, suggestions), then Google:
+//! a search for exactly what is typed, first, and Google's completions of
+//! it under that, a key or two away; last, the query asked of Grok or
+//! searched on X. With no app or answer, Return searches what was typed
+//! (as an address bar's does). Completions land a moment after the rest;
+//! the panel keeps the selection on the row it was on (`Nanolight.answered`).
+const std = @import("std");
+const search = @import("search.zig");
+const calc = @import("calc.zig");
+
+pub const Kind = enum {
+    calc,
+    app,
+    ask_grok,
+    search_x,
+    search_web,
+    /// One of Google's completions (`Row.web`).
+    suggest,
+
+    /// The row's kind as its trailing label shows it.
+    pub fn label(k: Kind) []const u8 {
+        return switch (k) {
+            .calc => "Calculator",
+            .app => "Application",
+            .ask_grok, .search_x, .search_web, .suggest => "Web",
+        };
+    }
+
+    /// What Return does to it.
+    pub fn action(k: Kind) []const u8 {
+        return switch (k) {
+            .calc => "Copy Answer",
+            .app => "Open Application",
+            .ask_grok => "Ask Grok",
+            .search_x => "Search X",
+            .search_web, .suggest => "Search Google",
+        };
+    }
+
+    fn section(k: Kind, suggested: bool) []const u8 {
+        return switch (k) {
+            .calc => "Calculator",
+            .app => if (suggested) "Suggestions" else "Applications",
+            .search_web, .suggest => "Google",
+            .ask_grok, .search_x => "Ask & Search",
+        };
+    }
+};
+
+pub const Row = struct {
+    kind: Kind,
+    /// The app's index (`.app`).
+    app: u32 = 0,
+    /// Which of the completions (`.suggest`).
+    web: u8 = 0,
+    /// Which of its name's bytes the query matched.
+    match: search.Match = .{ .score = 0 },
+};
+
+pub const max_apps = 6;
+/// Google's completions fill what room is left, up to four.
+pub const max_web = 4;
+/// Every app and the three web rows leave room for three completions.
+pub const max_rows = max_apps + 3 + 3;
+/// The web rows that always follow the apps: Google, Grok, X.
+const handoffs = 3;
+
+pub const Results = struct {
+    rows: [max_rows]Row = undefined,
+    n: usize = 0,
+    /// No query: the apps are suggestions, nothing else is listed.
+    suggested: bool = false,
+    /// The math's answer, as shown.
+    answer_buf: [64]u8 = undefined,
+    answer: []const u8 = "",
+    /// A whole answer in hexadecimal too ("0xC00"), else empty.
+    hex_buf: [24]u8 = undefined,
+    hex: []const u8 = "",
+
+    pub fn slice(r: *const Results) []const Row {
+        return r.rows[0..r.n];
+    }
+
+    /// Lists what `query` finds among `names` (with how often each was
+    /// opened, `boost`) and Google's completions of it (`web`), or
+    /// `suggestions` when the query is empty.
+    pub fn build(r: *Results, query_in: []const u8, names: []const []const u8, boost: []const u16, suggestions: []const u32, web: []const []const u8) void {
+        r.n = 0;
+        const query = std.mem.trim(u8, query_in, " ");
+        r.suggested = query.len == 0;
+        if (query.len == 0) {
+            for (suggestions[0..@min(suggestions.len, max_apps)]) |i| r.push(.{ .kind = .app, .app = i });
+            return;
+        }
+        if (calc.eval(query)) |v| {
+            r.answer = calc.format(&r.answer_buf, v, true);
+            r.hex = if (v >= 0 and v < 1e15 and v == @round(v))
+                std.fmt.bufPrint(&r.hex_buf, "0x{X}", .{@as(u64, @intFromFloat(v))}) catch ""
+            else
+                "";
+            r.push(.{ .kind = .calc });
+        }
+        var ranked: [max_apps]search.Ranked = undefined;
+        const n = search.rank(query, names, boost, &ranked);
+        for (ranked[0..n]) |x| r.push(.{ .kind = .app, .app = x.index, .match = x.match });
+        if (r.n > 0 and r.rows[0].kind == .calc) return;
+        // The search for what was typed, its completions (as many as leave
+        // room for the rest), then Grok and X.
+        const room = max_rows - r.n - handoffs;
+        r.push(.{ .kind = .search_web });
+        for (0..@min(web.len, max_web, room)) |i| r.push(.{ .kind = .suggest, .web = @intCast(i) });
+        r.push(.{ .kind = .ask_grok });
+        r.push(.{ .kind = .search_x });
+    }
+
+    fn push(r: *Results, row: Row) void {
+        if (r.n == max_rows) return;
+        r.rows[r.n] = row;
+        r.n += 1;
+    }
+
+    /// The header above row `i`, if a section starts there.
+    pub fn section(r: *const Results, i: usize) ?[]const u8 {
+        const k = r.rows[i].kind;
+        const name = k.section(r.suggested);
+        if (i > 0 and std.mem.eql(u8, r.rows[i - 1].kind.section(r.suggested), name)) return null;
+        return name;
+    }
+};
+
+/// The address a web row opens for `query`.
+pub fn url(buf: []u8, kind: Kind, query: []const u8) []const u8 {
+    const base = switch (kind) {
+        .ask_grok => "https://grok.com/?q=",
+        .search_x => "https://x.com/search?f=live&q=",
+        .search_web, .suggest => "https://www.google.com/search?q=",
+        .calc, .app => return "",
+    };
+    var w: std.Io.Writer = .fixed(buf);
+    w.writeAll(base) catch return "";
+    escape(&w, query);
+    return w.buffered();
+}
+
+/// `query`, trimmed, as a URL's query value: spaces as `+`, the rest of
+/// what isn't plain as `%XX`. Stops where `w` is full.
+pub fn escape(w: *std.Io.Writer, query: []const u8) void {
+    for (std.mem.trim(u8, query, " ")) |ch| {
+        if (std.ascii.isAlphanumeric(ch) or ch == '-' or ch == '_' or ch == '.' or ch == '~') {
+            w.writeByte(ch) catch break;
+        } else if (ch == ' ') {
+            w.writeByte('+') catch break;
+        } else w.print("%{X:0>2}", .{ch}) catch break;
+    }
+}
+
+test "math first, then apps; ask and search only without an answer" {
+    const t = std.testing;
+    const names = [_][]const u8{ "Safari", "System Settings", "Calculator" };
+    var r: Results = .{};
+    r.build("saf", &names, &.{}, &.{}, &.{});
+    try t.expectEqual(Kind.app, r.rows[0].kind);
+    try t.expectEqual(@as(u32, 0), r.rows[0].app);
+    try t.expectEqual(Kind.search_web, r.rows[r.n - 3].kind);
+    try t.expectEqualStrings("Applications", r.section(0).?);
+    try t.expectEqualStrings("Google", r.section(1).?);
+    try t.expectEqualStrings("Ask & Search", r.section(2).?);
+    try t.expect(r.section(3) == null);
+    r.build("2^10 * 3", &names, &.{}, &.{}, &.{"ignored"});
+    try t.expectEqual(Kind.calc, r.rows[0].kind);
+    try t.expectEqualStrings("3,072", r.answer);
+    try t.expectEqualStrings("0xC00", r.hex);
+    try t.expectEqual(@as(usize, 1), r.n);
+    r.build("", &names, &.{}, &.{ 2, 0 }, &.{});
+    try t.expectEqual(@as(usize, 2), r.n);
+    try t.expectEqualStrings("Suggestions", r.section(0).?);
+    r.build("liquid glass", &names, &.{}, &.{}, &.{});
+    try t.expectEqual(@as(usize, 3), r.n);
+    // No app: the search for what was typed comes first.
+    try t.expectEqual(Kind.search_web, r.rows[0].kind);
+    try t.expectEqualStrings("Google", r.section(0).?);
+    try t.expectEqualStrings("Ask & Search", r.section(1).?);
+    // Completions under it, in the same section, then Grok and X.
+    r.build("liquid gl", &names, &.{}, &.{}, &.{ "liquid glass", "liquid glue" });
+    try t.expectEqual(@as(usize, 5), r.n);
+    try t.expectEqual(Kind.search_web, r.rows[0].kind);
+    try t.expectEqual(Kind.suggest, r.rows[1].kind);
+    try t.expectEqual(@as(u8, 1), r.rows[2].web);
+    try t.expectEqual(Kind.ask_grok, r.rows[3].kind);
+    try t.expect(r.section(1) == null and r.section(2) == null);
+    try t.expectEqualStrings("Ask & Search", r.section(3).?);
+    // A full list of apps still ends with every handoff.
+    const many = [_][]const u8{ "Safari", "Mail", "Maps", "Pages", "Calendar", "Calculator", "FaceTime" };
+    r.build("a", &many, &.{}, &.{}, &.{ "a1", "a2", "a3", "a4" });
+    try t.expectEqual(max_rows, r.n);
+    try t.expectEqual(Kind.search_web, r.rows[max_apps].kind);
+    try t.expectEqual(Kind.suggest, r.rows[max_apps + 1].kind);
+    try t.expectEqual(Kind.search_x, r.rows[max_rows - 1].kind);
+}
+
+test "queries are escaped into the address" {
+    var buf: [128]u8 = undefined;
+    try std.testing.expectEqualStrings("https://x.com/search?f=live&q=liquid+glass+%26+UI", url(&buf, .search_x, " liquid glass & UI "));
+}
