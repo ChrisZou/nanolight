@@ -24,6 +24,10 @@ const Preview = @import("preview.zig").Preview;
 const single = @import("single.zig");
 
 const suggest_key = "nanolight.suggest";
+/// The version an automatic update restarted into, for the new copy to say.
+const updated_key = "nanolight.updated";
+/// How long the panel must have been away before an update restarts it.
+const auto_update_after_ms = 10 * 1000;
 
 /// The window around the panel: shown and hidden. It is never resized: it
 /// is as tall as the panel can be, and clear below it; only the system
@@ -155,7 +159,44 @@ const Live = struct {
     }
 
     fn updated(ctx: *anyopaque) void {
-        menu(@ptrCast(@alignCast(ctx)));
+        const l: *Live = @ptrCast(@alignCast(ctx));
+        menu(l);
+        l.autoUpdate();
+    }
+
+    /// A newer version is downloaded and checked: Nanolight restarts into it
+    /// on its own once the panel has been away a while. (A menu bar app
+    /// almost never quits, so installing at quit, as nanoui's updater
+    /// otherwise does, would mean never.) Called as one is ready and each
+    /// time the panel goes away.
+    fn autoUpdate(l: *Live) void {
+        const u = l.updater orelse return;
+        if (u.ready() == null) return;
+        nanoui.App.after(auto_update_after_ms, l, struct {
+            fn f(c: ?*anyopaque) callconv(.c) void {
+                const live: *Live = @ptrCast(@alignCast(c.?));
+                live.restartIfAway();
+            }
+        }.f);
+    }
+
+    fn restartIfAway(l: *Live) void {
+        const u = l.updater orelse return;
+        const v = u.ready() orelse return;
+        // In use: the next time it goes away (`keyChanged`) asks again.
+        if (l.window) |w| if (w.isVisible()) return;
+        // The new copy starts quietly and says it was updated (main).
+        l.kv.set(updated_key, v) catch {};
+        if (u.restart()) l.app.quit() else l.kv.remove(updated_key);
+    }
+
+    /// The panel became, or stopped being, the key window (it hides as it
+    /// stops): an update waiting may go in, and an "Updated" note is done.
+    fn keyChanged(ctx: *anyopaque, w: *nanoui.Window) void {
+        const l: *Live = @ptrCast(@alignCast(ctx));
+        if (w.isFocused()) return;
+        l.s.note = "";
+        l.autoUpdate();
     }
 
     fn hide(ctx: *anyopaque) void {
@@ -339,6 +380,7 @@ pub fn main(init: std.process.Init) !void {
         .resizable = false,
         .title_bar = .popover,
         .visible = false,
+        .on_key = .{ .ctx = &live, .func = Live.keyChanged },
         .content = .{ .view = .init(&s, Nanolight.view) },
     });
     if (app.flags.hidden) return app.run();
@@ -370,6 +412,13 @@ pub fn main(init: std.process.Init) !void {
         live.updater = u;
     };
     live.menu();
-    Live.toggle(&live);
+    // Restarted by an automatic update: quietly, the panel saying so the
+    // next time it opens. Otherwise launching shows the panel.
+    var note_buf: [64]u8 = undefined;
+    if (kv.get(init.gpa, updated_key) catch null) |v| {
+        defer init.gpa.free(v);
+        kv.remove(updated_key);
+        s.note = std.fmt.bufPrint(&note_buf, "Updated to {s}", .{v}) catch "Updated";
+    } else Live.toggle(&live);
     try app.run();
 }

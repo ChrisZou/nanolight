@@ -59,6 +59,12 @@ test "the panel finds, moves, answers and hands off" {
     // No query: suggestions.
     try std.testing.expect(t.hasText("Suggestions"));
     try std.testing.expect(t.hasText("Safari"));
+    // After an automatic update, the footer says so in place of the name.
+    try std.testing.expect(t.hasText("Nanolight · 5 apps"));
+    s.note = "Updated to 0.1.3";
+    t.settle(1);
+    try std.testing.expect(t.hasText("Updated to 0.1.3 · 5 apps"));
+    s.note = "";
 
     // The top app's name completes what is typed; → takes it.
     press(&t, &.{.{ .insert = "saf" }});

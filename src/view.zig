@@ -103,6 +103,8 @@ pub const Nanolight = struct {
     last_h: f32 = 0,
     /// The query as it was shown: selected, so no completion after it yet.
     revealed: u64 = 0,
+    /// Said in the footer in place of the name ("Updated to 0.1.3"), if set.
+    note: []const u8 = "",
     /// The first-run welcome, drawn in the panel while it is active.
     onboard: ?*@import("onboard.zig").Onboard = null,
     /// Google's completions: whether to ask for them, those listed, and
@@ -504,7 +506,7 @@ pub const Nanolight = struct {
         const bar = ui.div(c).row().wFull().h(footer_h).px(16).gap(8).itemsCenter();
         defer bar.end();
         appIcon(c, 16);
-        ui.textf(c, .{ .size = 12, .weight = .medium, .color = p.sub.alpha(0.8) }, "Nanolight · {d} apps", .{s.index.apps.items.len});
+        ui.textf(c, .{ .size = 12, .weight = .medium, .color = p.sub.alpha(0.8) }, "{s} · {d} apps", .{ if (s.note.len > 0) s.note else "Nanolight", s.index.apps.items.len });
         ui.spacer(c);
         if (s.previewing) {
             ui.text(c, "Open in Browser", .{ .size = 12, .weight = .medium, .color = p.text.alpha(0.85) });
