@@ -21,6 +21,7 @@ const shortcut = @import("shortcut.zig");
 const Onboard = @import("onboard.zig").Onboard;
 const suggest = @import("suggest.zig");
 const Preview = @import("preview.zig").Preview;
+const single = @import("single.zig");
 
 const suggest_key = "nanolight.suggest";
 
@@ -55,8 +56,19 @@ const Live = struct {
     }
 
     fn open(ctx: *anyopaque, target: []const u8) void {
-        _ = ctx;
-        if (std.mem.startsWith(u8, target, "https://") or std.mem.startsWith(u8, target, "http://")) _ = nanoui.shell.openUrl(target) else _ = nanoui.shell.openPath(target);
+        const l: *Live = @ptrCast(@alignCast(ctx));
+        if (std.mem.startsWith(u8, target, "https://") or std.mem.startsWith(u8, target, "http://")) {
+            _ = nanoui.shell.openUrl(target);
+        } else if (single.isSelf(target)) {
+            // Nanolight is already open: the panel comes back, empty,
+            // rather than macOS starting a second copy.
+            l.s.query.clear();
+            nanoui.App.after(60, l, struct {
+                fn f(c: ?*anyopaque) callconv(.c) void {
+                    toggle(c.?);
+                }
+            }.f);
+        } else _ = nanoui.shell.openPath(target);
     }
 
     /// Google is asked once typing pauses (`suggest.pause_ms`).
@@ -330,6 +342,8 @@ pub fn main(init: std.process.Init) !void {
         .content = .{ .view = .init(&s, Nanolight.view) },
     });
     if (app.flags.hidden) return app.run();
+    // The newest launch is the one that stays (single.zig).
+    if (single.quitOthers() > 0) std.log.info("nanolight: asked an older copy to quit", .{});
     // A menu bar app: no Dock icon, no menu bar of its own.
     _ = objc.msg(objc.BOOL, app.nsapp, "setActivationPolicy:", .{@as(objc.NSInteger, 1)});
     // The panel's own shadow, not the system's: a shadowed window in dark

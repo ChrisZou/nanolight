@@ -12,6 +12,7 @@ test {
     _ = @import("results.zig");
     _ = @import("suggest.zig");
     _ = @import("promo_camera.zig");
+    _ = @import("single.zig");
     _ = @import("apps.zig");
     _ = @import("hotkey.zig");
     _ = @import("shortcut.zig");
