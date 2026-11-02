@@ -32,6 +32,10 @@ pub const Host = struct {
     file: ?*const fn (ctx: *anyopaque, query: []const u8, out: *@import("file.zig").List) void = null,
     /// Start a Codex one-shot; the answer lands in `Nanolight.aiDone`.
     ai: ?*const fn (ctx: *anyopaque, question: []const u8) void = null,
+    /// Relaunch this bundle then quit (`reload` / `restart`).
+    restart: ?*const fn (ctx: *anyopaque) void = null,
+    /// Quit Nanolight (`quit`).
+    quit: ?*const fn (ctx: *anyopaque) void = null,
 };
 
 pub const width: f32 = 680;
@@ -503,6 +507,8 @@ pub const Nanolight = struct {
         const q = s.query.text();
         switch (r.kind) {
             .clipboard => ui.text(c, "Clipboard History", .{ .size = 13.5, .weight = .medium, .color = p.text }),
+            .restart => ui.text(c, "Restart Nanolight", .{ .size = 13.5, .weight = .medium, .color = p.text }),
+            .quit => ui.text(c, "Quit Nanolight", .{ .size = 13.5, .weight = .medium, .color = p.text }),
             .calc, .ai_answer => unreachable,
             .app => {
                 const a = s.index.apps.items[r.app];
@@ -548,7 +554,7 @@ pub const Nanolight = struct {
         }
         ui.spacer(c);
         if (i == s.sel) {
-            ui.text(c, if (r.kind == .app or r.kind == .pic or r.kind == .file) "Open" else if (r.kind == .ai_answer) "Copy" else if (r.kind == .ai_ask) "Ask" else "Go", .{ .size = 12, .weight = .medium, .color = p.sub });
+            ui.text(c, if (r.kind == .app or r.kind == .pic or r.kind == .file) "Open" else if (r.kind == .ai_answer) "Copy" else if (r.kind == .ai_ask) "Ask" else if (r.kind == .restart) "Restart" else if (r.kind == .quit) "Quit" else "Go", .{ .size = 12, .weight = .medium, .color = p.sub });
             ui.kbd(c, "↩");
         } else if (i < 9) ui.textf(c, .{ .size = 12, .weight = .medium, .color = p.sub.alpha(0.5), .tabular = true }, "⌘{d}", .{i + 1});
     }
@@ -622,6 +628,8 @@ pub const Nanolight = struct {
         }
         ui.icon(c, switch (r.kind) {
             .clipboard => "clipboard",
+            .restart => "arrow.clockwise",
+            .quit => "power",
             .calc => "plus.forwardslash.minus",
             .pic => "photo",
             .file => "doc",
@@ -686,6 +694,12 @@ pub const Nanolight = struct {
         const r = s.res.rows[@min(s.sel, s.res.n - 1)];
         switch (r.kind) {
             .clipboard => s.openClipboard(),
+            .restart => {
+                if (s.host) |h| if (h.restart) |f| f(h.ctx);
+            },
+            .quit => {
+                if (s.host) |h| if (h.quit) |f| f(h.ctx);
+            },
             .calc => {
                 var buf: [64]u8 = undefined;
                 const v = @import("calc.zig").eval(s.query.text()) orelse return;

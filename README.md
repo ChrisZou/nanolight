@@ -21,6 +21,7 @@ Apps, math, Google, Grok and X: one keystroke away. Native Zig, no Electron, abo
 - **Ask Codex**: plain queries default to a local Codex ask (Return). Or type `ai ` / `ask ` plus a question. Return on the answer copies it. Google, Grok and X stay in the list below.
 - **⌘1–⌘9** run a row at once; ↑ ↓ and ⌃N ⌃P move.
 - Lives in the menu bar: no Dock icon, and nothing drawn while it's idle.
+- **Restart or quit from the panel**: type `reload` / `restart`, or `quit`, then Return.
 
 ## Sync across Macs (optional)
 

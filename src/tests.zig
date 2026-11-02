@@ -518,6 +518,25 @@ test "the panel never outgrows its window, which is never resized" {
 }
 
 
+test "reload and quit are launcher commands" {
+    const gpa = std.testing.allocator;
+    var ix: Index = .init(gpa);
+    defer ix.deinit();
+    try ix.add("Safari", "/Applications/Safari.app");
+    var s: view.Nanolight = .{ .index = &ix };
+    defer s.query.deinit();
+    s.query.set("reload");
+    s.rebuild();
+    try std.testing.expectEqual(@as(usize, 1), s.res.n);
+    try std.testing.expectEqual(results.Kind.restart, s.res.rows[0].kind);
+    s.query.set("restart");
+    s.rebuild();
+    try std.testing.expectEqual(results.Kind.restart, s.res.rows[0].kind);
+    s.query.set("quit");
+    s.rebuild();
+    try std.testing.expectEqual(results.Kind.quit, s.res.rows[0].kind);
+}
+
 test "img, file and ai prefixes list their own rows" {
     const gpa = std.testing.allocator;
     var ix: Index = .init(gpa);

@@ -23,6 +23,25 @@ pub fn isSelf(path: []const u8) bool {
     return objc.msg(objc.BOOL, id, "isEqualToString:", .{theirs}) != objc.NO;
 }
 
+/// Opens this bundle again once this process has exited, the same way
+/// an update restart does: a short shell waits for our pid, then `open`.
+pub fn relaunch(io: std.Io) void {
+    const pool = objc.Pool.push();
+    defer pool.pop();
+    const b = objc.msg(objc.Object, objc.class("NSBundle"), "mainBundle", .{});
+    const path = objc.fromNSString(objc.msg(?objc.Object, b, "bundlePath", .{}));
+    if (path.len == 0) return;
+    var pid: [16]u8 = undefined;
+    const p = std.fmt.bufPrint(&pid, "{d}", .{std.c.getpid()}) catch return;
+    _ = std.process.spawn(io, .{
+        .argv = &.{ "/bin/sh", "-c", "while /bin/kill -0 \"$0\" 2>/dev/null; do sleep 0.2; done; /usr/bin/open \"$1\"", p, path },
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+        .pgid = 0,
+    }) catch |e| std.log.warn("nanolight: can't relaunch: {s}", .{@errorName(e)});
+}
+
 /// Asks every other running Nanolight to quit. Returns how many.
 pub fn quitOthers() usize {
     const pool = objc.Pool.push();

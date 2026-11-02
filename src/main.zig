@@ -79,7 +79,7 @@ const Live = struct {
     ai_job: ?*AiJob = null,
 
     fn host(l: *Live) view.Host {
-        return .{ .ctx = l, .open = open, .hide = hide, .resize = resize, .suggest = ask, .preview = showPage, .pic = picSearch, .file = fileSearch, .ai = aiAsk };
+        return .{ .ctx = l, .open = open, .hide = hide, .resize = resize, .suggest = ask, .preview = showPage, .pic = picSearch, .file = fileSearch, .ai = aiAsk, .restart = restartSelf, .quit = quitSelf };
     }
 
     fn open(ctx: *anyopaque, target: []const u8) void {
@@ -100,6 +100,17 @@ const Live = struct {
             // Its count went up: the other Macs suggest it too.
             if (l.acct) |*a| a.changed();
         }
+    }
+
+    fn restartSelf(ctx: *anyopaque) void {
+        const l: *Live = @ptrCast(@alignCast(ctx));
+        single.relaunch(l.app.io);
+        l.app.quit();
+    }
+
+    fn quitSelf(ctx: *anyopaque) void {
+        const l: *Live = @ptrCast(@alignCast(ctx));
+        l.app.quit();
     }
 
     // ----- sync (account.zig) -----

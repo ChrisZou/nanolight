@@ -11,6 +11,10 @@ const calc = @import("calc.zig");
 
 pub const Kind = enum {
     clipboard,
+    /// Relaunch this Nanolight (`reload` / `restart`).
+    restart,
+    /// Quit Nanolight (`quit`).
+    quit,
     calc,
     app,
     /// A Picemon image hit (`Row.pic`).
@@ -31,6 +35,7 @@ pub const Kind = enum {
     pub fn label(k: Kind) []const u8 {
         return switch (k) {
             .clipboard => "Clipboard",
+            .restart, .quit => "Nanolight",
             .calc => "Calculator",
             .app => "Application",
             .pic => "Image",
@@ -44,6 +49,8 @@ pub const Kind = enum {
     pub fn action(k: Kind) []const u8 {
         return switch (k) {
             .clipboard => "Open Clipboard History",
+            .restart => "Restart Nanolight",
+            .quit => "Quit Nanolight",
             .calc => "Copy Answer",
             .app => "Open Application",
             .pic => "Open Image",
@@ -59,6 +66,7 @@ pub const Kind = enum {
     fn section(k: Kind, suggested: bool) []const u8 {
         return switch (k) {
             .clipboard => "Clipboard",
+            .restart, .quit => "Nanolight",
             .calc => "Calculator",
             .app => if (suggested) "Suggestions" else "Applications",
             .pic => "Images",
@@ -117,6 +125,14 @@ pub const Results = struct {
         r.suggested = query.len == 0;
         if (std.ascii.eqlIgnoreCase(query, "clip")) {
             r.push(.{ .kind = .clipboard });
+            return;
+        }
+        if (std.ascii.eqlIgnoreCase(query, "reload") or std.ascii.eqlIgnoreCase(query, "restart")) {
+            r.push(.{ .kind = .restart });
+            return;
+        }
+        if (std.ascii.eqlIgnoreCase(query, "quit")) {
+            r.push(.{ .kind = .quit });
             return;
         }
         if (query.len == 0) {
@@ -193,7 +209,7 @@ pub fn url(buf: []u8, kind: Kind, query: []const u8) []const u8 {
         .ask_grok => "https://grok.com/?q=",
         .search_x => "https://x.com/search?f=live&q=",
         .search_web, .suggest => "https://www.google.com/search?q=",
-        .calc, .app, .clipboard, .pic, .file, .ai_ask, .ai_answer => return "",
+        .calc, .app, .clipboard, .restart, .quit, .pic, .file, .ai_ask, .ai_answer => return "",
     };
     var w: std.Io.Writer = .fixed(buf);
     w.writeAll(base) catch return "";
@@ -261,6 +277,21 @@ test "math first, then apps; ask and search only without an answer" {
     try t.expectEqual(Kind.search_web, r.rows[max_apps + 1].kind);
     try t.expectEqual(Kind.suggest, r.rows[max_apps + 2].kind);
     try t.expectEqual(Kind.search_x, r.rows[max_rows - 1].kind);
+}
+
+test "reload, restart and quit are built-in commands" {
+    const t = std.testing;
+    const names = [_][]const u8{"Safari"};
+    var r: Results = .{};
+    r.build("reload", &names, &.{}, &.{}, &.{});
+    try t.expectEqual(@as(usize, 1), r.n);
+    try t.expectEqual(Kind.restart, r.rows[0].kind);
+    try t.expectEqualStrings("Restart Nanolight", Kind.restart.action());
+    r.build("Restart", &names, &.{}, &.{}, &.{});
+    try t.expectEqual(Kind.restart, r.rows[0].kind);
+    r.build("quit", &names, &.{}, &.{}, &.{});
+    try t.expectEqual(Kind.quit, r.rows[0].kind);
+    try t.expectEqualStrings("Quit Nanolight", Kind.quit.action());
 }
 
 test "queries are escaped into the address" {
