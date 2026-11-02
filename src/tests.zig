@@ -18,6 +18,9 @@ test {
     _ = @import("apps.zig");
     _ = @import("hotkey.zig");
     _ = @import("shortcut.zig");
+    _ = @import("clipboard_store.zig");
+    _ = @import("clipboard.zig");
+    _ = @import("clipboard_panel.zig");
 }
 
 const Probe = struct {
@@ -35,6 +38,158 @@ const Probe = struct {
         p.hidden = true;
     }
 };
+
+const ClipProbe = struct {
+    panel: *@import("clipboard_panel.zig").Panel,
+    pasted: ?u64 = null,
+    saves: usize = 0,
+    closed: bool = false,
+    fn action(ctx: *anyopaque, a: @import("clipboard_panel.zig").Action, id: u64) void {
+        const p: *ClipProbe = @ptrCast(@alignCast(ctx));
+        switch (a) {
+            .enable => p.panel.enabled = true,
+            .paste => p.pasted = id,
+            .save => p.saves += 1,
+            .close => p.closed = true,
+            .accessibility => {},
+        }
+    }
+};
+
+test "clipboard mode opts in, filters locally, pins, deletes and selects original payloads" {
+    const t = std.testing;
+    var ix: Index = .init(t.allocator);
+    defer ix.deinit();
+    var store: @import("clipboard_store.zig").Store = .init(t.allocator);
+    defer store.deinit();
+    const first = (try store.add(.text, "First line\nSecond line", 100)).?;
+    const second = (try store.add(.text, "another copy", 101)).?;
+    var s: view.Nanolight = .{ .index = &ix };
+    defer s.query.deinit();
+    defer s.clip.query.deinit();
+    s.clip.store = &store;
+    var probe: ClipProbe = .{ .panel = &s.clip };
+    s.clip.hooks = .{ .ctx = &probe, .func = ClipProbe.action };
+    var web: Web = .{};
+    s.host = web.host();
+    s.reveal();
+    var tester: ui.Tester = undefined;
+    try tester.init(t.allocator, .init(&s, view.Nanolight.view), .{ .width = view.width, .height = view.max_height, .dark = true });
+    defer tester.deinit();
+    press(&tester, &.{.{ .insert = "clip" }});
+    try t.expect(tester.hasText("Clipboard History"));
+    press(&tester, &.{.{ .command = .insert_newline }});
+    tester.settle(1);
+    try t.expect(s.clip_mode);
+    try t.expect(tester.hasText("Enable Clipboard History"));
+    try t.expectEqual(@as(usize, 0), s.clip.n);
+    try tester.clickText("Enable Clipboard History");
+    tester.settle(1);
+    try t.expectEqual(@as(usize, 2), s.clip.n);
+    try t.expect(tester.hasText("First line Second line"));
+    // Store.filter supplies substring matching; the separate field must
+    // never ask the launcher's suggestion hook about clipboard words.
+    web.asked_len = 0;
+    press(&tester, &.{.{ .insert = "SECOND" }});
+    try t.expectEqual(@as(usize, 1), s.clip.n);
+    try t.expectEqual(first, s.clip.ids[0]);
+    try t.expectEqual(@as(usize, 0), web.asked_len);
+    press(&tester, &.{.{ .command = .insert_newline }});
+    try t.expectEqual(first, probe.pasted.?);
+    try t.expectEqualStrings("First line\nSecond line", store.get(probe.pasted.?).?.data);
+    _ = tester.shortcut(.{ .key = 'p', .cmd = true });
+    try t.expect(store.get(first).?.pinned);
+    _ = tester.shortcut(.{ .key = ui.Shortcut.escape });
+    try t.expectEqual(first, s.clip.ids[0]);
+    _ = tester.shortcut(.{ .key = ui.Shortcut.down });
+    try t.expectEqual(second, s.clip.ids[s.clip.sel]);
+    _ = tester.shortcut(.{ .key = 0x7f, .alt = true });
+    try t.expect(store.get(second) == null);
+    try t.expectEqual(first, s.clip.ids[s.clip.sel]);
+    try t.expectEqual(@as(usize, 2), probe.saves);
+    // Timer insertion preserves selection by id, including a pinned row.
+    _ = try store.add(.text, "new external copy", 102);
+    tester.settle(1);
+    try t.expectEqual(first, s.clip.ids[s.clip.sel]);
+    // Clear APIs invalidate every row, including pins, without stale data.
+    store.clear();
+    tester.settle(1);
+    try t.expectEqual(@as(usize, 0), s.clip.n);
+    try t.expect(tester.hasText("No clipboard history"));
+    _ = tester.shortcut(.{ .key = ui.Shortcut.escape });
+    try t.expect(probe.closed);
+}
+
+test "clipboard keyboard navigation reaches history below the fold and clamps after pruning" {
+    const t = std.testing;
+    var ix: Index = .init(t.allocator);
+    defer ix.deinit();
+    var store: @import("clipboard_store.zig").Store = .init(t.allocator);
+    defer store.deinit();
+    for (0..25) |i| {
+        var buf: [64]u8 = undefined;
+        _ = try store.add(.text, try std.fmt.bufPrint(&buf, "History {d}", .{i}), 100);
+    }
+    var s: view.Nanolight = .{ .index = &ix };
+    defer s.query.deinit();
+    defer s.clip.query.deinit();
+    s.clip.store = &store;
+    s.clip.enabled = true;
+    s.openClipboard();
+    var tester: ui.Tester = undefined;
+    try tester.init(t.allocator, .init(&s, view.Nanolight.view), .{ .width = view.width, .height = view.max_height });
+    defer tester.deinit();
+    tester.settle(1);
+    for (0..24) |_| _ = tester.shortcut(.{ .key = ui.Shortcut.down });
+    try t.expectEqual(@as(usize, 24), s.clip.sel);
+    var scrolled = false;
+    var offsets = tester.ctx.scroll.valueIterator();
+    while (offsets.next()) |offset| if (offset.* > 0) {
+        scrolled = true;
+    };
+    try t.expect(scrolled);
+    _ = store.prune(100 + store.limits.max_age_s);
+    tester.settle(1);
+    try t.expectEqual(@as(usize, 0), s.clip.n);
+    try t.expectEqual(@as(usize, 0), s.clip.sel);
+}
+
+test "clipboard images and file URLs keep their ids and original paste representations" {
+    const t = std.testing;
+    var ix: Index = .init(t.allocator);
+    defer ix.deinit();
+    var store: @import("clipboard_store.zig").Store = .init(t.allocator);
+    defer store.deinit();
+    const png = (try store.add(.png, view.icon_png, 100)).?;
+    _ = try store.add(.file_url, "file:///Users/chris/Documents/Design%20notes.pdf", 100);
+    _ = try store.add(.text, "A considered interface needs room to breathe.", 100);
+    _ = store.setPinned(png, true);
+    var s: view.Nanolight = .{ .index = &ix };
+    defer s.query.deinit();
+    defer s.clip.query.deinit();
+    s.clip.store = &store;
+    s.clip.enabled = true;
+    var probe: ClipProbe = .{ .panel = &s.clip };
+    s.clip.hooks = .{ .ctx = &probe, .func = ClipProbe.action };
+    s.openClipboard();
+    var tester: ui.Tester = undefined;
+    try tester.init(t.allocator, .init(&s, view.Nanolight.view), .{ .width = view.width, .height = view.max_height, .dark = true });
+    defer tester.deinit();
+    tester.settle(1);
+    try t.expectEqual(png, s.clip.ids[0]);
+    try t.expect(tester.containsText("Image ·"));
+    tester.theme = ui.Theme.light;
+    tester.settle(1);
+    try t.expect(tester.containsText("Image ·"));
+    press(&tester, &.{.{ .command = .insert_newline }});
+    try t.expectEqual(png, probe.pasted.?);
+    try t.expectEqual(@import("clipboard_store.zig").Kind.png, store.get(probe.pasted.?).?.kind);
+    try t.expectEqualStrings(view.icon_png, store.get(probe.pasted.?).?.data);
+    press(&tester, &.{.{ .insert = "Design" }});
+    try t.expectEqual(@as(usize, 1), s.clip.n);
+    press(&tester, &.{.{ .command = .insert_newline }});
+    try t.expectEqual(@import("clipboard_store.zig").Kind.file_url, store.get(probe.pasted.?).?.kind);
+}
 
 fn press(t: *ui.Tester, ops: []const ui.TextOp) void {
     t.textOps(ops);

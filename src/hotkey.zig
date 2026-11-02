@@ -11,6 +11,7 @@ extern "c" fn GetApplicationEventTarget() ?*anyopaque;
 extern "c" fn InstallEventHandler(target: ?*anyopaque, handler: Handler, count: u32, list: [*]const EventTypeSpec, user: ?*anyopaque, out: ?*?*anyopaque) i32;
 extern "c" fn RegisterEventHotKey(key_code: u32, modifiers: u32, id: HotKeyId, target: ?*anyopaque, options: u32, out: *?*anyopaque) i32;
 extern "c" fn UnregisterEventHotKey(ref: ?*anyopaque) i32;
+extern "c" fn GetEventParameter(event: ?*anyopaque, name: u32, kind: u32, actual: ?*u32, size: u32, actual_size: ?*u32, data: *HotKeyId) i32;
 
 /// Carbon's modifier bits.
 pub const cmd: u32 = 1 << 8;
@@ -22,29 +23,49 @@ pub const space: u32 = 49;
 
 pub const Pressed = struct { ctx: *anyopaque, func: *const fn (ctx: *anyopaque) void };
 
-var pressed: ?Pressed = null;
+var pressed: [2]?Pressed = .{ null, null };
 var installed = false;
-var current: ?*anyopaque = null;
+var current: [2]?*anyopaque = .{ null, null };
 
-fn handle(_: ?*anyopaque, _: ?*anyopaque, _: ?*anyopaque) callconv(.c) i32 {
-    if (pressed) |p| p.func(p.ctx);
+fn handle(_: ?*anyopaque, event: ?*anyopaque, _: ?*anyopaque) callconv(.c) i32 {
+    var id: HotKeyId = undefined;
+    if (GetEventParameter(event, fourcc("----"), fourcc("hkid"), null, @sizeOf(HotKeyId), null, &id) != 0) return -9874;
+    return dispatch(id);
+}
+
+fn dispatch(id: HotKeyId) i32 {
+    if (id.signature != fourcc("nsPL") or id.id < 1 or id.id > pressed.len) return -9874;
+    if (pressed[id.id - 1]) |p| p.func(p.ctx);
     return 0;
 }
 
 /// Calls `on` on the main thread each time `key` with `modifiers` is
-/// pressed. One hot key per app: registering again replaces it. Carbon
+/// pressed. Registering again replaces only the launcher key. Carbon
 /// grants it even when another app holds the same keys (`shortcut.zig`
 /// looks for those).
 pub fn register(key: u32, modifiers: u32, on: Pressed) !void {
-    pressed = on;
+    try registerSlot(0, key, modifiers, on);
+}
+
+/// kVK_ANSI_V, independent of the configurable launcher shortcut.
+pub fn registerClipboard(on: Pressed) !void {
+    try registerSlot(1, 9, cmd | shift, on);
+}
+
+fn registerSlot(slot: usize, key: u32, modifiers: u32, on: Pressed) !void {
     if (!installed) {
         const spec = [_]EventTypeSpec{.{ .class = fourcc("keyb"), .kind = 5 }}; // kEventHotKeyPressed
         if (InstallEventHandler(GetApplicationEventTarget(), &handle, 1, &spec, null, null) != 0) return error.HandlerFailed;
         installed = true;
     }
-    if (current) |r| _ = UnregisterEventHotKey(r);
-    current = null;
-    if (RegisterEventHotKey(key, modifiers, .{ .signature = fourcc("nsPL"), .id = 1 }, GetApplicationEventTarget(), 0, &current) != 0) return error.HotKeyTaken;
+    if (current[slot]) |r| _ = UnregisterEventHotKey(r);
+    current[slot] = null;
+    pressed[slot] = null;
+    // Exclusive registration fails if another app already owns ⇧⌘V,
+    // instead of silently opening two clipboard viewers on the same key.
+    const options: u32 = if (slot == 1) 1 else 0;
+    if (RegisterEventHotKey(key, modifiers, .{ .signature = fourcc("nsPL"), .id = @intCast(slot + 1) }, GetApplicationEventTarget(), options, &current[slot]) != 0) return error.HotKeyTaken;
+    pressed[slot] = on;
 }
 
 fn fourcc(comptime s: *const [4]u8) u32 {
@@ -53,4 +74,29 @@ fn fourcc(comptime s: *const [4]u8) u32 {
 
 test "four characters read as Carbon's codes" {
     try std.testing.expectEqual(@as(u32, 0x6B657962), fourcc("keyb"));
+}
+
+test "Carbon ids dispatch independently and ignore foreign events" {
+    const Counter = struct {
+        n: usize = 0,
+        fn hit(ctx: *anyopaque) void {
+            const c: *@This() = @ptrCast(@alignCast(ctx));
+            c.n += 1;
+        }
+    };
+    var launcher: Counter = .{};
+    var clips: Counter = .{};
+    const saved = pressed;
+    defer pressed = saved;
+    pressed = .{ .{ .ctx = &launcher, .func = Counter.hit }, .{ .ctx = &clips, .func = Counter.hit } };
+    _ = dispatch(.{ .signature = fourcc("nsPL"), .id = 2 });
+    try std.testing.expectEqual(@as(usize, 0), launcher.n);
+    try std.testing.expectEqual(@as(usize, 1), clips.n);
+    _ = dispatch(.{ .signature = fourcc("nsPL"), .id = 1 });
+    try std.testing.expectEqual(@as(usize, 1), launcher.n);
+    try std.testing.expectEqual(@as(usize, 1), clips.n);
+    _ = dispatch(.{ .signature = fourcc("else"), .id = 2 });
+    _ = dispatch(.{ .signature = fourcc("nsPL"), .id = 0 });
+    _ = dispatch(.{ .signature = fourcc("nsPL"), .id = 3 });
+    try std.testing.expectEqual(@as(usize, 1), clips.n);
 }

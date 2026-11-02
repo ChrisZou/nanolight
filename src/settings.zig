@@ -7,6 +7,25 @@
 //! whichever Mac changed them last (`at`), and each app keeps the higher
 //! count of the two, so what you open most anywhere comes up first.
 const std = @import("std");
+const kv = @import("nanoui").kv;
+
+/// Device-only consent. Kept outside Settings so neither this flag nor
+/// clipboard payloads can enter the Codegraff JSON/merge/snapshot paths.
+pub const Local = struct {
+    clipboard_history: bool = false,
+
+    const clipboard_key = "nanolight.clipboard_history";
+
+    pub fn load(store: kv.Store, gpa: std.mem.Allocator) Local {
+        const value = (store.get(gpa, clipboard_key) catch null) orelse return .{};
+        defer gpa.free(value);
+        return .{ .clipboard_history = std.mem.eql(u8, value, "1") };
+    }
+
+    pub fn save(local: Local, store: kv.Store) !void {
+        try store.set(clipboard_key, if (local.clipboard_history) "1" else "0");
+    }
+};
 
 pub const Launch = struct { name: []const u8, count: u16 };
 
@@ -100,4 +119,30 @@ test "a record round-trips, and what isn't one isn't taken" {
     try std.testing.expect(decode(a, "not json") == null);
     // Fields a later version adds are passed over.
     try std.testing.expect(decode(a, "{\"v\":1,\"hotkey\":\"cmd_space\",\"suggest\":false,\"at\":5,\"theme\":\"dark\"}") != null);
+}
+
+test "clipboard consent is off by default, persists locally and never enters sync" {
+    const t = std.testing;
+    const a = t.allocator;
+    var memory: kv.Memory = .{ .gpa = a };
+    defer memory.deinit();
+    const store = memory.store();
+    try t.expect(!Local.load(store, a).clipboard_history);
+    try (Local{ .clipboard_history = true }).save(store);
+    try t.expect(Local.load(store, a).clipboard_history);
+    const body = try encode(a, .{ .hotkey = "cmd_space", .suggest = true, .at = 100 });
+    defer a.free(body);
+    try t.expect(std.mem.indexOf(u8, body, "clipboard") == null);
+    // Even a future/foreign sync record cannot enable local capture.
+    const incoming = "{\"v\":1,\"hotkey\":\"cmd_space\",\"suggest\":true,\"at\":200,\"clipboard_history\":true}";
+    var arena: std.heap.ArenaAllocator = .init(a);
+    defer arena.deinit();
+    try (Local{ .clipboard_history = false }).save(store);
+    const decoded = decode(arena.allocator(), incoming).?;
+    const outgoing = try encode(a, decoded);
+    defer a.free(outgoing);
+    try t.expect(std.mem.indexOf(u8, outgoing, "clipboard") == null);
+    try t.expect(!Local.load(store, a).clipboard_history);
+    try store.set(Local.clipboard_key, "true"); // Only explicit "1" opts in.
+    try t.expect(!Local.load(store, a).clipboard_history);
 }

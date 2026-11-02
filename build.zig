@@ -32,6 +32,8 @@ pub fn build(b: *std.Build) void {
     exe.root_module.linkFramework("ServiceManagement", .{});
     // The Codegraff key, kept in the Keychain (src/keychain.zig).
     exe.root_module.linkFramework("Security", .{});
+    // AX trust for clipboard paste (CGEvent is supplied by nanoui).
+    exe.root_module.linkFramework("ApplicationServices", .{});
     b.installArtifact(exe);
     const run = b.addRunArtifact(exe);
     run.addPassthruArgs();

@@ -10,6 +10,7 @@ const search = @import("search.zig");
 const calc = @import("calc.zig");
 
 pub const Kind = enum {
+    clipboard,
     calc,
     app,
     ask_grok,
@@ -21,6 +22,7 @@ pub const Kind = enum {
     /// The row's kind as its trailing label shows it.
     pub fn label(k: Kind) []const u8 {
         return switch (k) {
+            .clipboard => "Clipboard",
             .calc => "Calculator",
             .app => "Application",
             .ask_grok, .search_x, .search_web, .suggest => "Web",
@@ -30,6 +32,7 @@ pub const Kind = enum {
     /// What Return does to it.
     pub fn action(k: Kind) []const u8 {
         return switch (k) {
+            .clipboard => "Open Clipboard History",
             .calc => "Copy Answer",
             .app => "Open Application",
             .ask_grok => "Ask Grok",
@@ -40,6 +43,7 @@ pub const Kind = enum {
 
     fn section(k: Kind, suggested: bool) []const u8 {
         return switch (k) {
+            .clipboard => "Clipboard",
             .calc => "Calculator",
             .app => if (suggested) "Suggestions" else "Applications",
             .search_web, .suggest => "Google",
@@ -89,6 +93,10 @@ pub const Results = struct {
         r.n = 0;
         const query = std.mem.trim(u8, query_in, " ");
         r.suggested = query.len == 0;
+        if (std.ascii.eqlIgnoreCase(query, "clip")) {
+            r.push(.{ .kind = .clipboard });
+            return;
+        }
         if (query.len == 0) {
             for (suggestions[0..@min(suggestions.len, max_apps)]) |i| r.push(.{ .kind = .app, .app = i });
             return;
@@ -135,7 +143,7 @@ pub fn url(buf: []u8, kind: Kind, query: []const u8) []const u8 {
         .ask_grok => "https://grok.com/?q=",
         .search_x => "https://x.com/search?f=live&q=",
         .search_web, .suggest => "https://www.google.com/search?q=",
-        .calc, .app => return "",
+        .calc, .app, .clipboard => return "",
     };
     var w: std.Io.Writer = .fixed(buf);
     w.writeAll(base) catch return "";

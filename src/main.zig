@@ -25,6 +25,10 @@ const single = @import("single.zig");
 const ClickThrough = @import("clickthrough.zig").ClickThrough;
 const account = @import("account.zig");
 const Settings = @import("settings.zig").Settings;
+const LocalSettings = @import("settings.zig").Local;
+const clipboard = @import("clipboard.zig");
+const paste = @import("clipboard_paste.zig");
+const clip_panel = @import("clipboard_panel.zig");
 
 const suggest_key = "nanolight.suggest";
 /// The version an automatic update restarted into, for the new copy to say.
@@ -44,6 +48,7 @@ const Live = struct {
     s: *Nanolight,
     o: *Onboard,
     kv: nanoui.kv.Store,
+    clipboard: *clipboard.Capture,
     choice: shortcut.Choice = .cmd_space,
     window: ?*nanoui.Window = null,
     /// The system's glass under the panel, which the window's views keep.
@@ -65,6 +70,11 @@ const Live = struct {
     /// Null in headless runs.
     acct: ?account.Account = null,
     account_label: [192]u8 = undefined,
+    paste_target: paste.Target = .{},
+    paste_waiting: bool = false,
+    paste_attempts: u8 = 0,
+    paste_count: objc.NSInteger = 0,
+    clipboard_hotkey: bool = false,
 
     fn host(l: *Live) view.Host {
         return .{ .ctx = l, .open = open, .hide = hide, .resize = resize, .suggest = ask, .preview = showPage };
@@ -188,7 +198,7 @@ const Live = struct {
     fn send(l: *Live) void {
         const q = l.asking[0..l.asking_len];
         // Typed on, or turned off, while it waited.
-        if (!l.s.suggest_on or !suggest.same(q, l.s.query.text())) return;
+        if (l.s.clip_mode or !l.s.suggest_on or !suggest.same(q, l.s.query.text())) return;
         const a = l.app.gpa.create(Ask) catch return;
         a.* = .{ .live = l, .len = q.len };
         @memcpy(a.text[0..q.len], q);
@@ -230,6 +240,120 @@ const Live = struct {
         if (l.window) |w| w.redraw();
     }
 
+    fn toggleClipboard(l: *Live, item: *nanoui.menu.Item) void {
+        l.enableClipboard(item.checked);
+    }
+
+    fn enableClipboard(l: *Live, on: bool) void {
+        if (on) l.clipboard.start() catch |e| {
+            std.log.warn("nanolight: couldn't start clipboard history ({s})", .{@errorName(e)});
+            l.menu();
+            l.s.clip.message = "Couldn't enable clipboard history";
+            return;
+        } else l.clipboard.stop();
+        (LocalSettings{ .clipboard_history = on }).save(l.kv) catch |e| {
+            std.log.warn("nanolight: couldn't save clipboard setting ({s})", .{@errorName(e)});
+            // Never keep capturing if consent couldn't be persisted.
+            if (on) l.clipboard.stop();
+        };
+        l.s.clip.enabled = l.clipboard.enabled();
+        l.s.clip.message = if (l.s.clip.enabled == on) "" else "Couldn't save clipboard setting";
+        l.clipboardChanged();
+        l.menu();
+    }
+
+    fn clipboardChanged(l: *Live) void {
+        if (l.s.clip_mode) if (l.window) |w| w.redraw();
+    }
+
+    fn clipboardAction(ctx: *anyopaque, action: clip_panel.Action, id: u64) void {
+        const l: *Live = @ptrCast(@alignCast(ctx));
+        switch (action) {
+            .enable => l.enableClipboard(true),
+            .save => {
+                l.clipboard.flush() catch {
+                    l.s.clip.message = "Couldn't save clipboard history";
+                };
+                l.clipboardChanged();
+            },
+            .accessibility => {
+                _ = nanoui.shell.openUrl("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility");
+            },
+            .close => hide(l),
+            .paste => l.pasteItem(id),
+        }
+    }
+
+    fn pasteItem(l: *Live, id: u64) void {
+        if (!l.clipboard.enabled() or l.paste_waiting) return;
+        if (!paste.trusted(true)) {
+            l.s.clip.message = "Allow Nanolight to paste";
+            l.s.clip.needs_accessibility = true;
+            l.clipboardChanged();
+            return;
+        }
+        l.s.clip.needs_accessibility = false;
+        if (!l.paste_target.valid()) {
+            l.s.clip.message = "Open from the app you want to paste into";
+            return;
+        }
+        l.clipboard.restore(id) catch {
+            l.s.clip.message = "Couldn't restore clipboard item";
+            return;
+        };
+        l.paste_count = l.clipboard.change_count;
+        l.paste_waiting = true;
+        l.paste_attempts = 0;
+        hide(l);
+        if (!l.paste_target.activate()) {
+            l.paste_waiting = false;
+            l.s.clip.message = "Copied; couldn't focus the previous app";
+            return;
+        }
+        nanoui.App.after(40, l, pasteLater);
+    }
+
+    fn pasteLater(ctx: ?*anyopaque) callconv(.c) void {
+        const l: *Live = @ptrCast(@alignCast(ctx.?));
+        if (!l.paste_waiting) return;
+        const pb = objc.msg(objc.Object, objc.class("NSPasteboard"), "generalPasteboard", .{});
+        // Never paste a newer copy, or paste after the user reopened us.
+        if (objc.msg(objc.NSInteger, pb, "changeCount", .{}) != l.paste_count or (if (l.window) |w| w.isVisible() else false)) {
+            l.paste_waiting = false;
+            return;
+        }
+        if (l.paste_target.ready()) {
+            l.paste_waiting = false;
+            l.paste_target.send() catch {
+                l.s.clip.message = "Copied; automatic paste failed";
+            };
+            return;
+        }
+        l.paste_attempts += 1;
+        if (l.paste_attempts >= 30 or !l.paste_target.valid()) {
+            l.paste_waiting = false;
+            l.s.clip.message = "Copied; press ⌘V to paste";
+            return;
+        }
+        nanoui.App.after(40, l, pasteLater);
+    }
+
+    fn clearClipboard(l: *Live, _: *nanoui.menu.Item) void {
+        l.clipboard.store.clear();
+        l.clipboard.flush() catch {
+            l.s.clip.message = "Couldn't save clipboard history";
+        };
+        l.clipboardChanged();
+    }
+
+    fn menuClipboard(l: *Live, _: *nanoui.menu.Item) void {
+        nanoui.App.after(50, l, struct {
+            fn f(ctx: ?*anyopaque) callconv(.c) void {
+                showClipboard(ctx.?);
+            }
+        }.f);
+    }
+
     /// The menu bar icon's menu, with the update waiting, if one is.
     fn menu(l: *Live) void {
         const t = l.tray orelse return;
@@ -240,6 +364,9 @@ const Live = struct {
             .{ .label = "Open Nanolight", .click = .of(l, Live.menuShow) },
             .{ .label = "Welcome…", .click = .of(l, Live.welcome) },
             .{ .label = "Google Suggestions", .kind = .checkbox, .checked = l.s.suggest_on, .click = .of(l, Live.toggleSuggest) },
+            .{ .label = "Clipboard History", .kind = .checkbox, .checked = l.clipboard.enabled(), .click = .of(l, Live.toggleClipboard) },
+            .{ .label = if (l.clipboard_hotkey) "Open Clipboard History (⌘⇧V)" else "Open Clipboard History (clip)", .click = .of(l, Live.menuClipboard) },
+            .{ .label = "Clear Clipboard History", .disabled = !l.clipboard.enabled(), .click = .of(l, Live.clearClipboard) },
             .separator,
             acc[0],
             acc[1],
@@ -319,7 +446,23 @@ const Live = struct {
         const w = l.window orelse return;
         const showing = w.isVisible() and w.isFocused();
         l.o.pressed(showing);
-        if (showing) return w.hide();
+        if (showing and !l.s.clip_mode) return w.hide();
+        l.s.clip_mode = false;
+        l.show();
+    }
+
+    fn showClipboard(ctx: *anyopaque) void {
+        const l: *Live = @ptrCast(@alignCast(ctx));
+        const w = l.window orelse return;
+        if (w.isVisible() and w.isFocused() and l.s.clip_mode) return w.hide();
+        l.s.openClipboard();
+        l.show();
+    }
+
+    fn show(l: *Live) void {
+        const w = l.window orelse return;
+        l.paste_waiting = false;
+        l.paste_target.remember();
         // Freed a key in System Settings, quit a launcher: look again.
         if (l.o.active) l.o.refresh();
         // A fifth of the way down the main screen, centered.
@@ -332,6 +475,7 @@ const Live = struct {
         // The panel there; the window is the shadow's margin bigger.
         w.setPosition(f.origin.x + (f.size.width - view.width) / 2 - view.shadow_margin, top + f.size.height * 0.2 - view.shadow_margin);
         l.s.reveal();
+        if (l.s.clip_mode) l.s.clip.query.focus();
         w.show();
         l.through.start();
         if (l.acct) |*a| a.maybePull();
@@ -467,7 +611,19 @@ pub fn main(init: std.process.Init) !void {
     var o: Onboard = .{};
     var s: Nanolight = .{ .index = &index, .kv = kv, .onboard = &o };
     defer s.query.deinit();
-    var live: Live = .{ .app = app, .s = &s, .o = &o, .kv = kv, .choice = shortcut.load(kv, init.gpa) };
+    var clips: clipboard.Capture = .{ .store = .init(init.gpa), .io = init.io, .home = init.environ_map.get("HOME") };
+    defer clips.deinit();
+    var live: Live = .{ .app = app, .s = &s, .o = &o, .kv = kv, .clipboard = &clips, .choice = shortcut.load(kv, init.gpa) };
+    defer live.paste_target.deinit();
+    defer s.clip.query.deinit();
+    s.clip.store = &clips.store;
+    s.clip.hooks = .{ .ctx = &live, .func = Live.clipboardAction };
+    clips.changed = .{ .ctx = &live, .func = struct {
+        fn f(ctx: *anyopaque) void {
+            const l: *Live = @ptrCast(@alignCast(ctx));
+            l.clipboardChanged();
+        }
+    }.f };
     s.host = live.host();
     // Google's completions are on unless turned off from the menu bar.
     if (kv.get(init.gpa, suggest_key) catch null) |v| {
@@ -498,6 +654,13 @@ pub fn main(init: std.process.Init) !void {
     objc.msg(void, live.window.?.nswindow, "setHasShadow:", .{objc.NO});
     live.glass = backdrop(live.window.?, 18, if (o.active) o.height() else s.height());
     live.useKey(live.choice);
+    live.clipboard_hotkey = registered: {
+        hotkey.registerClipboard(.{ .ctx = &live, .func = Live.showClipboard }) catch |e| {
+            std.log.warn("nanolight: ⌘⇧V unavailable ({s}); use clip in the launcher", .{@errorName(e)});
+            break :registered false;
+        };
+        break :registered true;
+    };
     live.through = .{ .window = live.window, .height = &s.last_h };
     live.preview.watch(.{ .ctx = &live, .func = Live.pageKey });
     o.hooks = live.hooks();
@@ -519,6 +682,9 @@ pub fn main(init: std.process.Init) !void {
     // Signed in before: synced now. Signing in is from the menu.
     live.acct = .{ .gpa = init.gpa, .kv = kv, .hooks = live.accountHooks() };
     live.acct.?.load();
+    if (LocalSettings.load(kv, init.gpa).clipboard_history) clips.start() catch |e|
+        std.log.warn("nanolight: couldn't start clipboard history ({s})", .{@errorName(e)});
+    s.clip.enabled = clips.enabled();
     live.menu();
     // Restarted by an automatic update: quietly, the panel saying so the
     // next time it opens. Otherwise launching shows the panel.

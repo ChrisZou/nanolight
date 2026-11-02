@@ -31,6 +31,14 @@ Two Macs merge rather than overwrite: the key and the suggestions setting follow
 
 Syncing goes through your Codegraff account, so [Codegraff's terms](https://codegraff.com/terms) and [privacy policy](https://codegraff.com/privacy) apply to it. New accounts made by signing in from Nanolight get $2 of Codegraff credit.
 
+## Clipboard history (optional)
+
+Open with **⌘⇧V**, or type **clip** in the launcher and press Return. Choose **Enable Clipboard History** to start recording on this Mac. Type to filter, Return to paste into the previous app, **⌥⌫** to delete, and **⌘P** to pin or unpin. **Clear Clipboard History** is in the menu bar menu and clears pins too; the current system clipboard stays intact. If ⌘⇧V is already registered by another app, use `clip` or the menu instead.
+
+The first paste asks for Accessibility access. In **System Settings → Privacy & Security → Accessibility**, enable **Nanolight**, return to the destination app, and reopen history. Capture and browsing do not require that permission. Text, PNG/TIFF images and individual file URLs retain their original clipboard representation; multi-file copies appear as separate items.
+
+History stays local, outside Codegraff sync, with limits of 200 items, 7 days and 32 MiB (including pins). Turning capture off keeps saved history and ignores copies made while disabled.
+
 ## Install
 
 Download `nanolight-macos-arm64.dmg` from the [latest release](https://github.com/justrach/nanolight/releases/latest), open it and drag Nanolight to Applications. macOS 14 or later, Apple silicon.

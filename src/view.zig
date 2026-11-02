@@ -83,6 +83,8 @@ pub fn palette(dark: bool) Palette {
 
 pub const Nanolight = struct {
     index: *Index,
+    clip: @import("clipboard_panel.zig").Panel = .{},
+    clip_mode: bool = false,
     query: ui.TextBuffer = .{},
     res: results.Results = .{},
     sel: usize = 0,
@@ -131,6 +133,7 @@ pub const Nanolight = struct {
 
     /// The panel's height for the rows it lists.
     pub fn height(s: *const Nanolight) f32 {
+        if (s.clip_mode) return s.clip.height();
         if (s.previewing) return max_height;
         var h: f32 = header_h + footer_h + 1;
         if (s.res.n == 0) return h;
@@ -167,13 +170,19 @@ pub const Nanolight = struct {
             });
         }
         defer shell.end();
-        if (s.onboard) |o| if (o.active) {
+        if (!s.clip_mode) if (s.onboard) |o| if (o.active) {
             const h = s.follow(c, o.height());
             const body = ui.div(c).column().wFull().h(h).clip();
             defer body.end();
             o.view(c, s, p);
             return;
         };
+
+        if (s.clip_mode) {
+            s.clip.fill(c.arena.allocator());
+            s.clip.draw(c, p, s.follow(c, s.clip.height()));
+            return;
+        }
 
         s.keys(c);
         const submitted = s.header(c, p);
@@ -320,6 +329,7 @@ pub const Nanolight = struct {
     /// row it was on, wherever that row now is: Return a moment after
     /// typing does what the panel showed, not a completion that just came.
     pub fn answered(s: *Nanolight, typed: []const u8, said: *const suggest.List) void {
+        if (s.clip_mode) return;
         s.cache.put(typed, said);
         if (!suggest.same(typed, s.query.text())) return;
         const was: ?Row = if (s.sel < s.res.n) s.res.rows[s.sel] else null;
@@ -390,6 +400,7 @@ pub const Nanolight = struct {
         s.tile(c, p, r);
         const q = s.query.text();
         switch (r.kind) {
+            .clipboard => ui.text(c, "Clipboard History", .{ .size = 13.5, .weight = .medium, .color = p.text }),
             .calc => unreachable,
             .app => {
                 const a = s.index.apps.items[r.app];
@@ -469,6 +480,7 @@ pub const Nanolight = struct {
             return;
         }
         ui.icon(c, switch (r.kind) {
+            .clipboard => "clipboard",
             .calc => "plus.forwardslash.minus",
             .ask_grok => "sparkles",
             .search_web => "globe",
@@ -529,6 +541,7 @@ pub const Nanolight = struct {
         if (s.res.n == 0) return;
         const r = s.res.rows[@min(s.sel, s.res.n - 1)];
         switch (r.kind) {
+            .clipboard => s.openClipboard(),
             .calc => {
                 var buf: [64]u8 = undefined;
                 const v = @import("calc.zig").eval(s.query.text()) orelse return;
@@ -548,6 +561,12 @@ pub const Nanolight = struct {
                 s.search(s.query.text());
             },
         }
+    }
+
+    pub fn openClipboard(s: *Nanolight) void {
+        s.back();
+        s.clip_mode = true;
+        s.clip.open();
     }
 
     /// ⌘↩ on the selected row: a search opens in the browser.
