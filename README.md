@@ -4,6 +4,8 @@
 <p align="center"><b>A ⌘Space launcher for the Mac, drawn by <a href="https://github.com/justrach/nanoui">nanoui</a>.</b><br>
 Apps, math, Google, Grok and X: one keystroke away. Native Zig, no Electron, about 1 MB.</p>
 
+<p align="center"><a href="https://github.com/justrach/nanolight/raw/refs/heads/main/docs/promo.mp4"><img src="docs/promo-preview.gif" alt="Nanolight in 31 seconds: apps, initials, typos, math, Google suggestions and results in the panel, on a MacBook Air" width="760"></a><br><sub><a href="https://github.com/justrach/nanolight/raw/refs/heads/main/docs/promo.mp4"><b>Watch it with sound →</b></a> · <a href="docs/promo.md">How it was made</a></sub></p>
+
 <p align="center"><img src="docs/images/nanolight.jpg" alt="Nanolight's panel has found Safari from &quot;saf&quot;" width="760"></p>
 
 ## What it does
@@ -49,6 +51,7 @@ VERSION=0.1.0 sh macos/package.sh   # the release: signed app, disk image, updat
 | `src/preview.zig` | The results page in the panel (WKWebView) |
 | `src/onboard.zig`, `src/shortcut.zig` | The welcome, and which key is free |
 | `src/film.zig`, `src/stage.zig`, `tools/film.sh` | The walkthrough, rendered offscreen |
+| `src/promo.zig`, `src/promo_cards.zig`, `tools/promo.sh`, `tools/promo/` | The promo: nanoui's shots, Blender's laptop ([docs/promo.md](docs/promo.md)) |
 
 The icon is drawn by `tools/icon.py`. `src/backdrop.jpg` (the film's cover art) was made with OpenAI's image model.
 

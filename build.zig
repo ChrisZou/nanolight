@@ -4,6 +4,7 @@
 //!   zig build app            zig-out/Nanolight.app, for /Applications
 //!   zig build test           its search, math, suggestions and panel
 //!   zig build film           the walkthrough's renderer (tools/film.sh)
+//!   zig build promo          the promo's renderer (tools/promo.sh)
 //!
 //! Release packages (the signed app, its disk image and the update feed)
 //! are macos/package.sh's.
@@ -55,6 +56,15 @@ pub fn build(b: *std.Build) void {
         .imports = &.{.{ .name = "nanoui", .module = nanoui }},
     }) });
     b.step("film", "Build the walkthrough's renderer (zig-out/bin/nanolight-film)").dependOn(&b.addInstallArtifact(film, .{}).step);
+
+    // The promo's shots, rendered offscreen (src/promo.zig, tools/promo.sh).
+    const promo = b.addExecutable(.{ .name = "nanolight-promo", .root_module = b.createModule(.{
+        .root_source_file = b.path("src/promo.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "nanoui", .module = nanoui }},
+    }) });
+    b.step("promo", "Build the promo's renderer (zig-out/bin/nanolight-promo)").dependOn(&b.addInstallArtifact(promo, .{}).step);
 }
 
 /// Nanolight as a Mac app: its program, its icon, and an Info.plist that
