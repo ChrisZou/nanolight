@@ -59,11 +59,22 @@ notarize() {
   fi
 }
 
+# Stapling fetches the ticket from Apple's CloudKit, which sometimes drops
+# the connection (error 68) though notarization succeeded: a few tries.
+staple() {
+  for try in 1 2 3 4 5; do
+    xcrun stapler staple "$1" && return 0
+    echo "stapling $1 failed (try $try); retrying" >&2
+    sleep $((try * 10))
+  done
+  return 1
+}
+
 sign "$bundle"
 if notarizing; then
   ditto -c -k --keepParent "$bundle" "$out/Nanolight.zip"
   notarize "$out/Nanolight.zip"
-  xcrun stapler staple "$bundle"
+  staple "$bundle"
   rm "$out/Nanolight.zip"
 fi
 
@@ -77,7 +88,7 @@ rm -rf "$stage"
 sign "$dmg"
 if notarizing; then
   notarize "$dmg"
-  xcrun stapler staple "$dmg"
+  staple "$dmg"
 fi
 (cd "$out" && shasum -a 256 "$(basename "$dmg")" | tee "$(basename "$dmg").sha256")
 
