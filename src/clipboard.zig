@@ -84,7 +84,7 @@ pub const Capture = struct {
         c.store.deinit();
     }
 
-    /// Also used after pass 2's delete/clear/pin actions. Failed writes leave
+    /// Also used after delete/clear/pin actions. Failed writes leave
     /// dirty set and are retried by the next tick; never log copied content.
     pub fn flush(c: *Capture) !void {
         if (c.dir) |dir| try c.store.save(c.io, dir);

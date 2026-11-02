@@ -286,28 +286,32 @@ const Live = struct {
 
     fn pasteItem(l: *Live, id: u64) void {
         if (!l.clipboard.enabled() or l.paste_waiting) return;
+        // Always put the original bytes back first. Auto-paste needs
+        // Accessibility; without it the item is still on the pasteboard.
+        l.clipboard.restore(id) catch {
+            l.s.clip.message = "Couldn't restore clipboard item";
+            l.clipboardChanged();
+            return;
+        };
         if (!paste.trusted(true)) {
-            l.s.clip.message = "Allow Nanolight to paste";
+            l.s.clip.message = "Copied — allow Accessibility to paste";
             l.s.clip.needs_accessibility = true;
             l.clipboardChanged();
             return;
         }
         l.s.clip.needs_accessibility = false;
         if (!l.paste_target.valid()) {
-            l.s.clip.message = "Open from the app you want to paste into";
+            l.s.clip.message = "Copied — press ⌘V in your app";
+            l.clipboardChanged();
             return;
         }
-        l.clipboard.restore(id) catch {
-            l.s.clip.message = "Couldn't restore clipboard item";
-            return;
-        };
         l.paste_count = l.clipboard.change_count;
         l.paste_waiting = true;
         l.paste_attempts = 0;
         hide(l);
         if (!l.paste_target.activate()) {
             l.paste_waiting = false;
-            l.s.clip.message = "Copied; couldn't focus the previous app";
+            // Already restored; stay in the destination app if activate failed partway.
             return;
         }
         nanoui.App.after(40, l, pasteLater);
@@ -324,15 +328,13 @@ const Live = struct {
         }
         if (l.paste_target.ready()) {
             l.paste_waiting = false;
-            l.paste_target.send() catch {
-                l.s.clip.message = "Copied; automatic paste failed";
-            };
+            // Restore already succeeded; a failed keystroke still leaves ⌘V usable.
+            l.paste_target.send() catch {};
             return;
         }
         l.paste_attempts += 1;
         if (l.paste_attempts >= 30 or !l.paste_target.valid()) {
             l.paste_waiting = false;
-            l.s.clip.message = "Copied; press ⌘V to paste";
             return;
         }
         nanoui.App.after(40, l, pasteLater);

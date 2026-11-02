@@ -74,6 +74,7 @@ pub const Panel = struct {
             if (p.query.text().len > 0) p.query.clear() else p.action(.close, 0);
         }
         if (p.n == 0) return;
+        const store = p.store orelse return;
         if (c.shortcut(.{ .key = S.down }) or c.shortcut(.{ .key = 'n', .ctrl = true })) {
             p.sel = (p.sel + 1) % p.n;
             p.scroll_selection = true;
@@ -83,14 +84,14 @@ pub const Panel = struct {
             p.scroll_selection = true;
         }
         if (c.shortcut(.{ .key = 0x7f, .alt = true })) {
-            _ = p.store.?.delete(p.ids[p.sel]);
+            _ = store.delete(p.ids[p.sel]);
             p.action(.save, 0);
             p.fill(c.arena.allocator());
             p.scroll_selection = true;
         }
         if (p.n > 0 and c.shortcut(.{ .key = 'p', .cmd = true })) {
-            const item = p.store.?.get(p.ids[p.sel]) orelse return;
-            _ = p.store.?.setPinned(item.id, !item.pinned);
+            const item = store.get(p.ids[p.sel]) orelse return;
+            _ = store.setPinned(item.id, !item.pinned);
             p.action(.save, 0);
             p.fill(c.arena.allocator());
             p.scroll_selection = true;
@@ -161,12 +162,8 @@ pub const Panel = struct {
         if (p.needs_accessibility) {
             if (ui.button(c, "Accessibility…", .{ .size = 11 }).clicked) p.action(.accessibility, 0);
         } else if (p.n > 0) {
-            ui.text(c, "Delete", .{ .size = 12, .color = colors.sub });
             ui.kbd(c, "⌥⌫");
-            const selected = p.store.?.get(p.ids[p.sel]);
-            ui.text(c, if (selected != null and selected.?.pinned) "Unpin" else "Pin", .{ .size = 12, .color = colors.sub });
             ui.kbd(c, "⌘P");
-            ui.text(c, "Paste", .{ .size = 12, .color = colors.text });
             ui.kbd(c, "↩");
         }
     }
@@ -174,13 +171,22 @@ pub const Panel = struct {
 
 fn title(c: *ui.Context, item: history.Item) []const u8 {
     if (item.kind == .png or item.kind == .tiff) return c.print("Image · {d} KB", .{(item.data.len + 1023) / 1024});
+    const raw = if (item.kind == .file_url) fileLabel(item.data) else item.data;
     // Bound shaping cost and never split a UTF-8 character. Collapse line
     // breaks so a multiline copy stays a single, consistently sized row.
-    var end = @min(item.data.len, 512);
-    while (end > 0 and end < item.data.len and item.data[end] & 0xc0 == 0x80) end -= 1;
-    const text = c.arena.allocator().dupe(u8, item.data[0..end]) catch return "";
+    var end = @min(raw.len, 512);
+    while (end > 0 and end < raw.len and raw[end] & 0xc0 == 0x80) end -= 1;
+    const text = c.arena.allocator().dupe(u8, raw[0..end]) catch return "";
     for (text) |*ch| if (ch.* < 32) {
         ch.* = ' ';
     };
     return text;
+}
+
+/// Last path segment of a file URL for the row label.
+fn fileLabel(url: []const u8) []const u8 {
+    var s = url;
+    if (std.mem.startsWith(u8, s, "file://")) s = s["file://".len..];
+    if (std.mem.lastIndexOfScalar(u8, s, '/')) |i| s = s[i + 1 ..];
+    return if (s.len > 0) s else url;
 }
