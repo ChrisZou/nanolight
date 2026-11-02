@@ -1,10 +1,10 @@
 //! What the panel lists for a query, in order: the answer when it is math,
-//! the apps that match it (or, with no query, suggestions), then Google:
-//! a search for exactly what is typed, first, and Google's completions of
-//! it under that, a key or two away; last, the query asked of Grok or
-//! searched on X. With no app or answer, Return searches what was typed
-//! (as an address bar's does). Completions land a moment after the rest;
-//! the panel keeps the selection on the row it was on (`Nanolight.answered`).
+//! the apps that match it (or, with no query, suggestions), then AI
+//! (local Codex) for exactly what is typed, then Google: a search and
+//! Google's completions under that, a key or two away; last, the query
+//! asked of Grok or searched on X. With no app or answer, Return asks
+//! Codex. Completions land a moment after the rest; the panel keeps the
+//! selection on the row it was on (`Nanolight.answered`).
 const std = @import("std");
 const search = @import("search.zig");
 const calc = @import("calc.zig");
@@ -17,7 +17,7 @@ pub const Kind = enum {
     pic,
     /// An FSearch file hit (`Row.file`).
     file,
-    /// Ask Codex (`ai ` / `ask `).
+    /// Ask Codex (default for plain queries, or `ai ` / `ask `).
     ai_ask,
     /// Codex's answer (Return copies it).
     ai_answer,
@@ -87,10 +87,10 @@ pub const Row = struct {
 pub const max_apps = 6;
 /// Google's completions fill what room is left, up to four.
 pub const max_web = 4;
-/// Every app and the three web rows leave room for three completions.
-pub const max_rows = max_apps + 3 + 3;
-/// The web rows that always follow the apps: Google, Grok, X.
-const handoffs = 3;
+/// Every app and the four handoff rows leave room for three completions.
+pub const max_rows = max_apps + 4 + 3;
+/// The handoffs that always follow the apps: AI, Google, Grok, X.
+const handoffs = 4;
 
 pub const Results = struct {
     rows: [max_rows]Row = undefined,
@@ -135,9 +135,10 @@ pub const Results = struct {
         const n = search.rank(query, names, boost, &ranked);
         for (ranked[0..n]) |x| r.push(.{ .kind = .app, .app = x.index, .match = x.match });
         if (r.n > 0 and r.rows[0].kind == .calc) return;
-        // The search for what was typed, its completions (as many as leave
-        // room for the rest), then Grok and X.
+        // Codex for what was typed first, then Google and its completions
+        // (as many as leave room for the rest), then Grok and X.
         const room = max_rows - r.n - handoffs;
+        r.push(.{ .kind = .ai_ask });
         r.push(.{ .kind = .search_web });
         for (0..@min(web.len, max_web, room)) |i| r.push(.{ .kind = .suggest, .web = @intCast(i) });
         r.push(.{ .kind = .ask_grok });
@@ -219,11 +220,13 @@ test "math first, then apps; ask and search only without an answer" {
     r.build("saf", &names, &.{}, &.{}, &.{});
     try t.expectEqual(Kind.app, r.rows[0].kind);
     try t.expectEqual(@as(u32, 0), r.rows[0].app);
+    try t.expectEqual(Kind.ai_ask, r.rows[r.n - 4].kind);
     try t.expectEqual(Kind.search_web, r.rows[r.n - 3].kind);
     try t.expectEqualStrings("Applications", r.section(0).?);
-    try t.expectEqualStrings("Google", r.section(1).?);
-    try t.expectEqualStrings("Ask & Search", r.section(2).?);
-    try t.expect(r.section(3) == null);
+    try t.expectEqualStrings("AI", r.section(1).?);
+    try t.expectEqualStrings("Google", r.section(2).?);
+    try t.expectEqualStrings("Ask & Search", r.section(3).?);
+    try t.expect(r.section(4) == null);
     r.build("2^10 * 3", &names, &.{}, &.{}, &.{"ignored"});
     try t.expectEqual(Kind.calc, r.rows[0].kind);
     try t.expectEqualStrings("3,072", r.answer);
@@ -233,26 +236,30 @@ test "math first, then apps; ask and search only without an answer" {
     try t.expectEqual(@as(usize, 2), r.n);
     try t.expectEqualStrings("Suggestions", r.section(0).?);
     r.build("liquid glass", &names, &.{}, &.{}, &.{});
-    try t.expectEqual(@as(usize, 3), r.n);
-    // No app: the search for what was typed comes first.
-    try t.expectEqual(Kind.search_web, r.rows[0].kind);
-    try t.expectEqualStrings("Google", r.section(0).?);
-    try t.expectEqualStrings("Ask & Search", r.section(1).?);
-    // Completions under it, in the same section, then Grok and X.
+    try t.expectEqual(@as(usize, 4), r.n);
+    // No app: Codex for what was typed comes first.
+    try t.expectEqual(Kind.ai_ask, r.rows[0].kind);
+    try t.expectEqual(Kind.search_web, r.rows[1].kind);
+    try t.expectEqualStrings("AI", r.section(0).?);
+    try t.expectEqualStrings("Google", r.section(1).?);
+    try t.expectEqualStrings("Ask & Search", r.section(2).?);
+    // Completions under Google, in the same section, then Grok and X.
     r.build("liquid gl", &names, &.{}, &.{}, &.{ "liquid glass", "liquid glue" });
-    try t.expectEqual(@as(usize, 5), r.n);
-    try t.expectEqual(Kind.search_web, r.rows[0].kind);
-    try t.expectEqual(Kind.suggest, r.rows[1].kind);
-    try t.expectEqual(@as(u8, 1), r.rows[2].web);
-    try t.expectEqual(Kind.ask_grok, r.rows[3].kind);
-    try t.expect(r.section(1) == null and r.section(2) == null);
-    try t.expectEqualStrings("Ask & Search", r.section(3).?);
+    try t.expectEqual(@as(usize, 6), r.n);
+    try t.expectEqual(Kind.ai_ask, r.rows[0].kind);
+    try t.expectEqual(Kind.search_web, r.rows[1].kind);
+    try t.expectEqual(Kind.suggest, r.rows[2].kind);
+    try t.expectEqual(@as(u8, 1), r.rows[3].web);
+    try t.expectEqual(Kind.ask_grok, r.rows[4].kind);
+    try t.expect(r.section(2) == null and r.section(3) == null);
+    try t.expectEqualStrings("Ask & Search", r.section(4).?);
     // A full list of apps still ends with every handoff.
     const many = [_][]const u8{ "Safari", "Mail", "Maps", "Pages", "Calendar", "Calculator", "FaceTime" };
     r.build("a", &many, &.{}, &.{}, &.{ "a1", "a2", "a3", "a4" });
     try t.expectEqual(max_rows, r.n);
-    try t.expectEqual(Kind.search_web, r.rows[max_apps].kind);
-    try t.expectEqual(Kind.suggest, r.rows[max_apps + 1].kind);
+    try t.expectEqual(Kind.ai_ask, r.rows[max_apps].kind);
+    try t.expectEqual(Kind.search_web, r.rows[max_apps + 1].kind);
+    try t.expectEqual(Kind.suggest, r.rows[max_apps + 2].kind);
     try t.expectEqual(Kind.search_x, r.rows[max_rows - 1].kind);
 }
 

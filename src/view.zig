@@ -52,10 +52,10 @@ const footer_h = 38;
 const list_pad = 6;
 /// The room a window leaves round the panel for its shadow (`Nanolight.margin`).
 pub const shadow_margin: f32 = 40;
-/// The tallest the panel gets: every app row, the three web rows and
-/// Google's completions, under three section heads (math lists fewer), or
+/// The tallest the panel gets: every app row, the four handoff rows and
+/// Google's completions, under four section heads (math lists fewer), or
 /// a search's page. The window is this tall.
-pub const max_height: f32 = header_h + footer_h + 2 + list_pad * 2 + results.max_rows * row_h + 3 * section_h;
+pub const max_height: f32 = header_h + footer_h + 2 + list_pad * 2 + results.max_rows * row_h + 4 * section_h;
 
 /// Where a search's page goes in a panel `h` tall: from `y` down from its
 /// top, `h` tall, between the header and the footer, the panel's width.
@@ -130,7 +130,7 @@ pub const Nanolight = struct {
     pics: @import("pic.zig").List = .{},
     /// FSearch hits for the current `f `/`find `/`file ` query.
     files: @import("file.zig").List = .{},
-    /// Codex Q&A (`ai `/`ask `).
+    /// Codex Q&A (plain query default, or `ai `/`ask `).
     ai_status: @import("ai.zig").Status = .ready,
     ai_question: [@import("ai.zig").max_question]u8 = undefined,
     ai_question_len: usize = 0,
@@ -293,7 +293,8 @@ pub const Nanolight = struct {
     /// or Tab takes it. The top app's name when one is listed first ("saf"
     /// → "ari"), else Google's first completion that goes on from the
     /// words ("liquid gl" → "ass"), so it is one key away, not a walk
-    /// down the rows. Return never takes it: Return is the selected row.
+    /// down the rows — even when the default row is Ask Codex. Return
+    /// never takes it: Return is the selected row.
     fn completion(s: *const Nanolight) []const u8 {
         const q = s.query.text();
         if (q.len == 0 or s.res.n == 0 or std.hash.Wyhash.hash(0, q) == s.revealed) return "";
@@ -303,7 +304,7 @@ pub const Nanolight = struct {
             if (name.len <= q.len or !std.ascii.startsWithIgnoreCase(name, q)) return "";
             return name[q.len..];
         }
-        if (r.kind != .search_web) return "";
+        if (r.kind != .search_web and r.kind != .ai_ask) return "";
         for (0..s.web.n) |i| {
             const w = s.web.get(i);
             if (w.len > q.len and std.ascii.startsWithIgnoreCase(w, q)) return w[q.len..];
@@ -376,14 +377,33 @@ pub const Nanolight = struct {
             s.sel = 0;
             return;
         }
-        if (s.ai_status == .waiting) {
-            // Left the ai prefix while Codex runs: keep the job, drop the UI state on return.
+        // Plain query: keep the Codex question in sync so the default AI
+        // row can run, and stay on the AI UI while that ask is in flight
+        // or answered (same as the `ai ` / `ask ` prefix).
+        {
+            const question = std.mem.trim(u8, q, " \t");
+            const same = question.len == s.ai_question_len and std.mem.eql(u8, question, s.ai_question[0..s.ai_question_len]);
+            if (!same) {
+                if (question.len <= s.ai_question.len) {
+                    @memcpy(s.ai_question[0..question.len], question);
+                    s.ai_question_len = question.len;
+                } else s.ai_question_len = 0;
+                if (s.ai_status != .waiting) {
+                    s.ai_status = .ready;
+                    s.ai_text = "";
+                }
+            } else if (s.ai_status == .waiting or s.ai_status == .done or s.ai_status == .failed) {
+                const show_answer = s.ai_status == .done or s.ai_status == .failed;
+                s.res.buildAi(show_answer);
+                s.sel = 0;
+                return;
+            }
         }
         if (s.host) |host| if (host.suggest) |ask| if (s.suggest_on and suggest.eligible(q) and @import("calc.zig").eval(q) == null) {
             if (!s.cache.lookup(q, &s.web)) ask(host.ctx, q);
         };
         s.fill();
-        // The first row: an app, the answer, or the search for what was
+        // The first row: an app, the answer, or Ask Codex for what was
         // typed; never a completion nobody picked (they come after it).
         s.sel = 0;
     }

@@ -259,9 +259,11 @@ test "the panel finds, moves, answers and hands off" {
     press(&t, &.{.{ .command = .insert_newline }});
     try std.testing.expectEqualStrings("3072", t.clipboard.items);
 
-    // Anything else: Google, Grok, X.
+    // Anything else: AI, Google, Grok, X.
     press(&t, &.{ .{ .command = .select_all }, .{ .command = .delete_backward }, .{ .insert = "liquid glass" } });
+    try std.testing.expect(t.containsText("Ask Codex"));
     try std.testing.expect(t.containsText("Search X for"));
+    _ = t.shortcut(.{ .key = ui.Shortcut.down });
     _ = t.shortcut(.{ .key = ui.Shortcut.down });
     _ = t.shortcut(.{ .key = ui.Shortcut.down });
     press(&t, &.{.{ .command = .insert_newline }});
@@ -333,10 +335,10 @@ test "Google's completions land below, and a search shows in the panel" {
     try std.testing.expectEqual(@as(usize, 0), web.asked_len);
     press(&t, &.{ .{ .command = .select_all }, .{ .command = .delete_backward }, .{ .insert = "liquid gl" } });
     try std.testing.expectEqualStrings("liquid gl", web.asked[0..web.asked_len]);
-    // Return would search what was typed. The selection, moved before
-    // the answer comes, stays on its row, though the completions land
-    // above it, a key under the search.
-    try std.testing.expectEqual(results.Kind.search_web, s.res.rows[s.sel].kind);
+    // Return would ask Codex. The selection, moved before the answer
+    // comes, stays on its row, though the completions land above Grok/X.
+    try std.testing.expectEqual(results.Kind.ai_ask, s.res.rows[s.sel].kind);
+    _ = t.shortcut(.{ .key = ui.Shortcut.down });
     _ = t.shortcut(.{ .key = ui.Shortcut.down });
     _ = t.shortcut(.{ .key = ui.Shortcut.down });
     try std.testing.expectEqual(results.Kind.search_x, s.res.rows[s.sel].kind);
@@ -346,7 +348,8 @@ test "Google's completions land below, and a search shows in the panel" {
     t.settle(1);
     try std.testing.expect(t.hasText("Google"));
     try std.testing.expect(t.hasText("liquid glass apple"));
-    try std.testing.expectEqual(results.Kind.suggest, s.res.rows[1].kind);
+    try std.testing.expectEqual(results.Kind.search_web, s.res.rows[1].kind);
+    try std.testing.expectEqual(results.Kind.suggest, s.res.rows[2].kind);
     try std.testing.expectEqual(results.Kind.search_x, s.res.rows[s.sel].kind);
     // The first completion shows faintly in the field; Tab takes it.
     try std.testing.expect(t.hasText("ass"));
@@ -354,12 +357,12 @@ test "Google's completions land below, and a search shows in the panel" {
     t.settle(1);
     try std.testing.expectEqualStrings("liquid glass", s.query.text());
     press(&t, &.{ .{ .command = .select_all }, .{ .command = .delete_backward }, .{ .insert = "liquid gl" } });
-    // Known at once this time, yet Return still searches what was typed,
-    // not a completion nobody picked.
-    try std.testing.expectEqual(results.Kind.suggest, s.res.rows[1].kind);
-    try std.testing.expectEqual(results.Kind.search_web, s.res.rows[s.sel].kind);
-    // ⌘2 is Google's first completion.
-    try std.testing.expect(t.hasText("⌘2"));
+    // Known at once this time, yet Return still asks Codex for what was
+    // typed, not a completion nobody picked.
+    try std.testing.expectEqual(results.Kind.suggest, s.res.rows[2].kind);
+    try std.testing.expectEqual(results.Kind.ai_ask, s.res.rows[s.sel].kind);
+    // ⌘3 is Google's first completion (⌘1 AI, ⌘2 Google).
+    try std.testing.expect(t.hasText("⌘3"));
     // One more letter: the answer so far stands in, and nothing is asked
     // again for words already answered.
     web.asked_len = 0;
@@ -370,8 +373,8 @@ test "Google's completions land below, and a search shows in the panel" {
     press(&t, &.{.{ .command = .delete_backward }});
     try std.testing.expectEqual(@as(usize, 0), web.asked_len);
 
-    // ⌘3, the second completion: its words in the field, Google's page in the panel.
-    try std.testing.expect(t.shortcut(.{ .key = '3', .cmd = true }));
+    // ⌘4, the second completion: its words in the field, Google's page in the panel.
+    try std.testing.expect(t.shortcut(.{ .key = '4', .cmd = true }));
     t.settle(1);
     try std.testing.expectEqualStrings("liquid glass apple", s.query.text());
     try std.testing.expectEqualStrings("https://www.google.com/search?q=liquid+glass+apple", web.page[0..web.page_len.?]);
@@ -384,12 +387,18 @@ test "Google's completions land below, and a search shows in the panel" {
     try std.testing.expect(web.page_len == null);
     try std.testing.expectEqualStrings("liquid glass apple", s.query.text());
 
-    // Return on words no app matches: Google's page; typing takes it away.
+    // Return on words no app matches: Ask Codex (no host.ai in this test).
+    // Move to Google and Return: Google's page; typing takes it away.
     press(&t, &.{ .{ .command = .select_all }, .{ .command = .delete_backward }, .{ .insert = "pizza" } });
+    try std.testing.expectEqual(results.Kind.ai_ask, s.res.rows[s.sel].kind);
+    press(&t, &.{.{ .command = .insert_newline }});
+    try std.testing.expect(web.page_len == null);
+    while (s.res.rows[s.sel].kind != .search_web) _ = t.shortcut(.{ .key = ui.Shortcut.down });
     press(&t, &.{.{ .command = .insert_newline }});
     try std.testing.expectEqualStrings("https://www.google.com/search?q=pizza", web.page[0..web.page_len.?]);
     press(&t, &.{.{ .insert = "s" }});
     try std.testing.expect(web.page_len == null);
+    try std.testing.expect(t.hasText("Ask Codex “pizzas”"));
     try std.testing.expect(t.hasText("Search Google for “pizzas”"));
 
     // ⌘↩ in the page, and on the row: the browser, and the panel hides.
@@ -535,4 +544,13 @@ test "img, file and ai prefixes list their own rows" {
     s.built = 1;
     s.rebuild();
     try std.testing.expectEqual(results.Kind.ai_answer, s.res.rows[0].kind);
+    // Plain query (no prefix): Ask Codex is the default Enter row.
+    s.ai_status = .ready;
+    s.ai_text = "";
+    s.built = 1;
+    s.query.set("今天是农历初几 2026");
+    s.rebuild();
+    try std.testing.expectEqual(results.Kind.ai_ask, s.res.rows[0].kind);
+    try std.testing.expectEqual(results.Kind.search_web, s.res.rows[1].kind);
+    try std.testing.expectEqualStrings("今天是农历初几 2026", s.ai_question[0..s.ai_question_len]);
 }
