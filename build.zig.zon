@@ -4,10 +4,10 @@
     .fingerprint = 0xe1facf60a4c2480c,
     .minimum_zig_version = "0.17.0",
     .dependencies = .{
-        .nanoui = .{
-            .url = "git+https://github.com/justrach/nanoui#7ef0fe75b345480985e23ca2c5a82a25154865a1",
-            .hash = "nanoui-0.10.0-we0KMfU7IwBpXRx73av8pj8_ZFqAyNArXeU8Wvn4YDyi",
-        },
+        // nanoui 0.10.0 (justrach/nanoui@7ef0fe75), patched: an idle panel
+        // wakes its display link instead of slowing it, so a key's frame is
+        // never covered by an older one (vendor/nanoui/src/ui/surface.zig).
+        .nanoui = .{ .path = "vendor/nanoui" },
     },
-    .paths = .{ "build.zig", "build.zig.zon", "src", "macos", "raycast/dist", "LICENSE" },
+    .paths = .{ "build.zig", "build.zig.zon", "src", "vendor", "macos", "raycast/dist", "LICENSE" },
 }
