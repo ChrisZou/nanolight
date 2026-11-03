@@ -4,6 +4,7 @@
 //! matched letters drawn stronger. Nothing moves while nothing happens:
 //! frames come from keys, and from the height and selection settling.
 const std = @import("std");
+const build_options = @import("build_options");
 const nanoui = @import("nanoui");
 const ui = nanoui.ui;
 const motion = ui.motion;
@@ -102,6 +103,9 @@ pub const Nanolight = struct {
     sel: usize = 0,
     /// The query the rows were built for.
     built: u64 = 1,
+    /// `built` as of the last highlight sample: a new list jumps the highlight;
+    /// the same list slides it when the selection moves.
+    sel_built: u64 = 0,
     host: ?Host = null,
     /// Draws its own Liquid Glass (over a desktop nanoui painted, as the
     /// film does); otherwise the window's system glass is under it.
@@ -179,7 +183,7 @@ pub const Nanolight = struct {
     /// The window's view: the panel, `margin` in from the window's edges.
     pub fn view(s: *Nanolight, c: *ui.Context) void {
         ui.key(c, c.print("panel-{d}", .{s.shown}));
-        const f = motion.frame(c, .{ .initial = .{ .opacity = 0, .y = -6, .scale = 0.985 }, .transition = .{ .spring = spring } });
+        const f = motion.frame(c, .{ .initial = .{ .opacity = 1, .y = -6, .scale = 0.985 }, .transition = .{ .spring = spring } });
         const root = ui.div(c).wFull().p(s.margin).motion(f);
         defer root.end();
         s.panel(c);
@@ -494,10 +498,12 @@ pub const Nanolight = struct {
             }
             y += rh;
         }
-        // A new list: the highlight is there at once; moving in it, it slides.
-        const fresh = c.print("{d}", .{s.built});
-        const hy = motion.number(c, fresh, sel_y, .{ .spring = slide });
-        const hh = motion.number(c, c.print("{d}h", .{s.built}), sel_h, .{ .spring = slide });
+        // A new list: jump the highlight; within the same list, slide to sel.
+        const fresh_list = s.sel_built != s.built;
+        s.sel_built = s.built;
+        const tr: motion.Transition = if (fresh_list) .instant else .{ .spring = slide };
+        const hy = motion.number(c, "sel-y", sel_y, tr);
+        const hh = motion.number(c, "sel-h", sel_h, tr);
         ui.div(c).absolute().offset(0, hy).w(width - list_pad * 2).h(hh).rounded(10).bg(p.sel).border(p.rim).end();
         for (s.res.slice(), 0..) |r, i| {
             if (s.res.section(i)) |name| {
@@ -692,7 +698,12 @@ pub const Nanolight = struct {
         const bar = ui.div(c).row().wFull().h(footer_h).px(16).gap(8).itemsCenter();
         defer bar.end();
         appIcon(c, 16);
-        ui.textf(c, .{ .size = 12, .weight = .medium, .color = p.sub.alpha(0.8) }, "{s} · {d} apps", .{ if (s.note.len > 0) s.note else "Nanolight", s.index.apps.items.len });
+        // One quiet line: name + version/build, or an update note; always keep the apps count.
+        if (s.note.len > 0) {
+            ui.textf(c, .{ .size = 12, .weight = .medium, .color = p.sub.alpha(0.8) }, "{s} · {d} apps", .{ s.note, s.index.apps.items.len });
+        } else {
+            ui.textf(c, .{ .size = 12, .weight = .medium, .color = p.sub.alpha(0.8) }, "Nanolight {s} ({d}) · {d} apps", .{ build_options.version, build_options.build, s.index.apps.items.len });
+        }
         ui.spacer(c);
         if (s.previewing) {
             ui.text(c, "Open in Browser", .{ .size = 12, .weight = .medium, .color = p.text.alpha(0.85) });

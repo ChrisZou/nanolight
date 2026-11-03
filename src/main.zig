@@ -11,6 +11,7 @@
 //! (its icon, icon.png, is drawn by tools/icon.py).
 //! The walkthrough film, rendered offscreen: `tools/film.sh` (film.zig).
 const std = @import("std");
+const build_options = @import("build_options");
 const nanoui = @import("nanoui");
 const objc = nanoui.objc;
 const Index = @import("apps.zig").Index;
@@ -536,6 +537,11 @@ const Live = struct {
         w.setPosition(f.origin.x + (f.size.width - view.width) / 2 - view.shadow_margin, top + f.size.height * 0.2 - view.shadow_margin);
         l.s.reveal();
         if (l.s.clip_mode) l.s.clip.query.focus();
+        // Glass matches the panel before the window appears (avoids a mismatched
+        // vibrancy flash under the first paint / enter motion).
+        const h = if (l.s.clip_mode) l.s.clip.height() else if (l.o.active) l.o.height() else l.s.height();
+        Live.resize(l, h);
+        l.s.last_h = h;
         w.show();
         l.through.start();
         if (l.acct) |*a| a.maybePull();
@@ -820,7 +826,7 @@ pub fn main(init: std.process.Init) !void {
     if (kv.get(init.gpa, updated_key) catch null) |v| {
         defer init.gpa.free(v);
         kv.remove(updated_key);
-        s.note = std.fmt.bufPrint(&note_buf, "Updated to {s}", .{v}) catch "Updated";
+        s.note = std.fmt.bufPrint(&note_buf, "Updated to {s} ({d})", .{ v, build_options.build }) catch "Updated";
     } else Live.toggle(&live);
     try app.run();
 }

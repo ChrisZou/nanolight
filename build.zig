@@ -19,6 +19,11 @@ pub fn build(b: *std.Build) void {
     }
     const nanoui = b.dependency("nanoui", .{ .target = target, .optimize = optimize }).module("nanoui");
     const version = b.option([]const u8, "version", "Nanolight's version, as the app shows it (release builds)") orelse "0.1.0";
+    // Integer build shown next to the version in the footer; bump on every shipped fix.
+    const build_num = b.option(u32, "build", "Integer build number shown next to the version") orelse 2;
+    const opts = b.addOptions();
+    opts.addOption([]const u8, "version", version);
+    opts.addOption(u32, "build", build_num);
 
     const exe = b.addExecutable(.{ .name = "nanolight", .root_module = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
@@ -26,6 +31,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{.{ .name = "nanoui", .module = nanoui }},
     }) });
+    exe.root_module.addOptions("build_options", opts);
     // Its hot key (⌘Space from any app, or the key its welcome picks) is Carbon's.
     exe.root_module.linkFramework("Carbon", .{});
     // Opening at login, from its welcome (SMAppService).
@@ -40,7 +46,7 @@ pub fn build(b: *std.Build) void {
     b.step("run", "Run Nanolight (⌘Space)").dependOn(&run.step);
 
     // zig-out/Nanolight.app: the program with its icon, for /Applications.
-    const app = b.addInstallDirectory(.{ .source_dir = bundle(b, exe, version), .install_dir = .prefix, .install_subdir = "Nanolight.app" });
+    const app = b.addInstallDirectory(.{ .source_dir = bundle(b, exe, version, build_num), .install_dir = .prefix, .install_subdir = "Nanolight.app" });
     b.getInstallStep().dependOn(&app.step);
     b.step("app", "Build zig-out/Nanolight.app").dependOn(&app.step);
 
@@ -50,6 +56,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{.{ .name = "nanoui", .module = nanoui }},
     }) });
+    tests.root_module.addOptions("build_options", opts);
     b.step("test", "Test Nanolight's search, math, suggestions and panel").dependOn(&b.addRunArtifact(tests).step);
 
     // The walkthrough, rendered offscreen (src/film.zig, tools/film.sh).
@@ -59,6 +66,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{.{ .name = "nanoui", .module = nanoui }},
     }) });
+    film.root_module.addOptions("build_options", opts);
     b.step("film", "Build the walkthrough's renderer (zig-out/bin/nanolight-film)").dependOn(&b.addInstallArtifact(film, .{}).step);
 
     // The promo's shots, rendered offscreen (src/promo.zig, tools/promo.sh).
@@ -68,21 +76,22 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{.{ .name = "nanoui", .module = nanoui }},
     }) });
+    promo.root_module.addOptions("build_options", opts);
     b.step("promo", "Build the promo's renderer (zig-out/bin/nanolight-promo)").dependOn(&b.addInstallArtifact(promo, .{}).step);
 }
 
 /// Nanolight as a Mac app: its program, its icon, and an Info.plist that
 /// keeps it out of the Dock (a menu bar app).
-fn bundle(b: *std.Build, exe: *std.Build.Step.Compile, version: []const u8) std.Build.LazyPath {
+fn bundle(b: *std.Build, exe: *std.Build.Step.Compile, version: []const u8, build_num: u32) std.Build.LazyPath {
     const wf = b.addWriteFiles();
-    _ = wf.add("Contents/Info.plist", infoPlist(b, version));
+    _ = wf.add("Contents/Info.plist", infoPlist(b, version, build_num));
     _ = wf.addCopyFile(exe.getEmittedBin(), "Contents/MacOS/nanolight");
     _ = wf.addCopyFile(b.path("macos/AppIcon.icns"), "Contents/Resources/AppIcon.icns");
     return wf.getDirectory();
 }
 
 /// The bundle's Info.plist (macos/package.sh writes the same one).
-pub fn infoPlist(b: *std.Build, version: []const u8) []const u8 {
+pub fn infoPlist(b: *std.Build, version: []const u8, build_num: u32) []const u8 {
     return b.fmt(
         \\<?xml version="1.0" encoding="UTF-8"?>
         \\<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -95,7 +104,7 @@ pub fn infoPlist(b: *std.Build, version: []const u8) []const u8 {
         \\  <key>CFBundleIconFile</key><string>AppIcon</string>
         \\  <key>CFBundlePackageType</key><string>APPL</string>
         \\  <key>CFBundleShortVersionString</key><string>{s}</string>
-        \\  <key>CFBundleVersion</key><string>{s}</string>
+        \\  <key>CFBundleVersion</key><string>{d}</string>
         \\  <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
         \\  <key>LSMinimumSystemVersion</key><string>14.0</string>
         \\  <key>LSUIElement</key><true/>
@@ -104,5 +113,5 @@ pub fn infoPlist(b: *std.Build, version: []const u8) []const u8 {
         \\</dict>
         \\</plist>
         \\
-    , .{ version, version });
+    , .{ version, build_num });
 }
