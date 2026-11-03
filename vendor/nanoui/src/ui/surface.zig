@@ -54,10 +54,7 @@ pub const Surface = struct {
     full_pending: bool = false,
     retained_ready: bool = false,
     frame_in_due: f64 = 0,
-    /// When the paused display link is to run again (`wakeAt`); 0: none.
-    wake_due: f64 = 0,
-    /// Wakes still to fire: the surface outlives them (`finishDestroy`).
-    wakes_pending: u32 = 0,
+    wake: @import("surface_wake.zig").Wake = .{},
     pending_sync: bool = false,
     /// A frame was wanted while the window was hidden: run it once visible.
     pending: bool = false,
@@ -172,7 +169,7 @@ pub const Surface = struct {
         self.dead = true;
         if (!self.in_frame) self.finishDestroy();
     }
-    fn finishDestroy(self: *Surface) void {
+    pub fn finishDestroy(self: *Surface) void {
         if (!self.torn_down) {
             self.torn_down = true;
             objc.setZig(self.nsview, null);
@@ -198,7 +195,7 @@ pub const Surface = struct {
             self.pacing_log.close();
             if (self.frame_log) |*fl| fl.deinit();
         }
-        if (!self.tick_scheduled and self.wakes_pending == 0) self.gpa.destroy(self);
+        if (!self.tick_scheduled and self.wake.pending == 0) self.gpa.destroy(self);
     }
 
     fn finishFrame(self: *Surface) void {
@@ -369,13 +366,7 @@ pub const Surface = struct {
                 self.setRate(null);
                 self.setPaced(true);
             } else if (c.frame_in != null) {
-                // Not a slowed link: a slow link's drawable is presented at
-                // its target, up to a whole interval ahead, so a frame drawn
-                // sooner for a key press showed first and was then covered
-                // by the older one. Paused instead, and woken at the
-                // display's pace when the frame is due.
-                self.setPaced(false);
-                self.wakeAt(self.frame_in_due);
+                @import("surface_wake.zig").at(self, self.frame_in_due); // not a slowed link: see there
             } else if (c.time_driven != .none) {
                 self.setRate(if (c.time_driven == .fast) null else 1.0 / 24.0);
                 self.setPaced(true);
@@ -483,7 +474,7 @@ pub const Surface = struct {
 
     /// The display link's pace: the display's (null), or one frame every
     /// `seconds`.
-    fn setRate(self: *Surface, seconds: ?f32) void {
+    pub fn setRate(self: *Surface, seconds: ?f32) void {
         const link = self.display_link orelse return;
         const fps: f32 = if (seconds) |s| (if (s < 0.009) 0 else std.math.clamp(1 / @max(s, 0.001), 1, 60)) else 0;
         if (fps == self.link_fps) return;
@@ -508,7 +499,7 @@ pub const Surface = struct {
         return self.is_visible;
     }
 
-    fn setPaced(self: *Surface, on: bool) void {
+    pub fn setPaced(self: *Surface, on: bool) void {
         if (self.paced == on) return;
         self.paced = on;
         if (!on) if (self.frame_log) |*fl| {
@@ -588,30 +579,6 @@ pub const Surface = struct {
         if (self.tip) |old| self.gpa.free(old);
         self.tip = if (tip) |t| self.gpa.dupe(u8, t) catch null else null;
         objc.msg(void, self.nsview, "setToolTip:", .{if (self.tip) |t| objc.nsString(t) else @as(?objc.Object, null)});
-    }
-
-    /// Runs the display link at the display's pace from about `due`
-    /// (`CACurrentMediaTime`), a refresh early so its next target lands
-    /// there. Only the latest wake counts.
-    fn wakeAt(self: *Surface, due: f64) void {
-        self.wake_due = due;
-        const lead = if (self.link_duration > 0) self.link_duration else 1.0 / 60.0;
-        const wait = @max(0, due - lead - cf.CACurrentMediaTime());
-        self.wakes_pending += 1;
-        objc.dispatchAfter(@intFromFloat(wait * std.time.ns_per_s), self, wake);
-    }
-    fn wake(ptr: ?*anyopaque) callconv(.c) void {
-        const self: *Surface = @ptrCast(@alignCast(ptr));
-        self.wakes_pending -= 1;
-        if (self.dead) return self.finishDestroy();
-        if (self.wake_due == 0) return;
-        const lead = if (self.link_duration > 0) self.link_duration else 1.0 / 60.0;
-        // An earlier wake, overtaken by a later one.
-        if (cf.CACurrentMediaTime() < self.wake_due - lead - 0.002) return;
-        self.wake_due = 0;
-        if (!self.visible()) return;
-        self.setRate(null);
-        self.setPaced(true);
     }
 
     fn scheduleTick(self: *Surface) void {
