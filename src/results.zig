@@ -124,7 +124,7 @@ pub const Results = struct {
         r.n = 0;
         const query = std.mem.trim(u8, query_in, " ");
         r.suggested = query.len == 0;
-        if (std.ascii.eqlIgnoreCase(query, "clip")) {
+        if (std.ascii.eqlIgnoreCase(query, "clip") or std.ascii.eqlIgnoreCase(query, "cb")) {
             r.push(.{ .kind = .clipboard });
             return;
         }
@@ -324,6 +324,18 @@ test "reload, restart and quit are built-in commands" {
     try t.expect(r.rows[0].kind != Kind.quit);
 }
 
+
+test "clip and cb open clipboard history" {
+    const t = std.testing;
+    const names = [_][]const u8{"Safari"};
+    var r: Results = .{};
+    for ([_][]const u8{ "clip", "CLIP", "cb", "CB", "  cb  " }) |q| {
+        r.build(q, &names, &.{}, &.{}, &.{});
+        try t.expectEqual(@as(usize, 1), r.n);
+        try t.expectEqual(Kind.clipboard, r.rows[0].kind);
+        try t.expectEqualStrings("Open Clipboard History", Kind.clipboard.action());
+    }
+}
 
 test "pm is a built-in command row" {
     var r: Results = .{};

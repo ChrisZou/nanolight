@@ -35,7 +35,7 @@ Syncing goes through your Codegraff account, so [Codegraff's terms](https://code
 
 ## Clipboard history (optional)
 
-Open with **⌘⇧V**, or type **clip** in the launcher and press Return. Choose **Enable Clipboard History** to start recording on this Mac. Type to filter, Return to paste into the previous app, **⌥⌫** to delete, and **⌘P** to pin or unpin. **Clear Clipboard History** is in the menu bar menu and clears pins too; the current system clipboard stays intact. If ⌘⇧V is already registered by another app, use `clip` or the menu instead.
+Open with **⌘⇧V**, or type **clip** or **cb** in the launcher and press Return. Choose **Enable Clipboard History** to start recording on this Mac. Type to filter, Return to paste into the previous app, **⌥⌫** to delete, and **⌘P** to pin or unpin. **Clear Clipboard History** is in the menu bar menu and clears pins too; the current system clipboard stays intact. If ⌘⇧V is already registered by another app, use `clip` / `cb` or the menu instead.
 
 Return puts the item back on the clipboard. Auto-paste asks for Accessibility the first time: in **System Settings → Privacy & Security → Accessibility**, enable **Nanolight**, then paste again. Capture and browsing do not need that permission. Text, PNG/TIFF images and individual file URLs retain their original clipboard representation; multi-file copies appear as separate items.
 
