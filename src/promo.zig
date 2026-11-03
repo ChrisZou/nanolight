@@ -1,8 +1,10 @@
-//! The promo: 47 seconds at 60 fps. The interface is the shot: Apple's
-//! MacBook Air (Blender, tools/promo/laptop.py) pushes into its display as
-//! ⌘Space opens the panel, then the panel fills the frame and one thing is
-//! done a shot, the camera easing in and out on an S-curve and a loupe
-//! lifting the one detail that matters. Labels are small and quiet; the
+//! The promo: 43 seconds at 60 fps, of what is new in Nanolight 2.0 (the
+//! 0.2 releases), after its titles (tools/promo.sh). The interface
+//! is the shot: Apple's MacBook Air (Blender, tools/promo/laptop.py)
+//! pushes into its display as ⌘Space opens the panel, then the panel fills
+//! the frame and one new thing is done a shot (Settings, a Raycast
+//! extension, a script command), the camera held still on the whole
+//! stage; then Windows and Linux. Labels are small and quiet; the
 //! end is the panel becoming the icon beside the name. (After a study of
 //! Apple's, Raycast's, Linear's and Cursor's launch films, and Emil
 //! Kowalski's easing: docs/promo.md.)
@@ -35,17 +37,21 @@ const sysinfo = @embedFile("promo_sysinfo.txt");
 fn quiet(_: *anyopaque, _: []const u8) void {}
 
 pub const fps = 60;
-pub const total: f32 = 47;
-/// The laptop's shot is the first `laptop` seconds; the main shot takes
+/// The opening's extra time: the MacBook and the XPS side by side, their
+/// panels opening together, before the camera pushes into the Mac's
+/// display. Every time below includes it.
+pub const lead: f32 = 2.0;
+pub const total: f32 = 37 + lead;
+/// The laptops' shot is the first `laptop` seconds; the main shot takes
 /// over from `main_from` (they cross for the difference).
-pub const laptop: f32 = 3.4;
-pub const main_from: f32 = 3.2;
-/// When the panel opens on the laptop's display.
-pub const open_at: f32 = 1.4;
-pub const end_at: f32 = 42.4;
+pub const laptop: f32 = 3.4 + lead;
+pub const main_from: f32 = 3.2 + lead;
+/// When the panel opens on the laptop's display (and the XPS's).
+pub const open_at: f32 = 1.4 + lead;
+pub const end_at: f32 = 32.4 + lead;
 /// The Mac's part ends here; the XPS (Windows, then Linux) takes over
 /// until the end (tools/promo.sh splices it in).
-pub const mac_until: f32 = 26.3;
+pub const mac_until: f32 = 16.3 + lead;
 
 const S = ui.Shortcut;
 
@@ -82,93 +88,55 @@ const down: Op = .{ .key = .{ .sc = .{ .key = S.down }, .label = "↓" } };
 const tab: Op = .{ .key = .{ .sc = .{ .key = S.tab }, .label = "Tab" } };
 const esc: Op = .{ .key = .{ .sc = .{ .key = S.escape }, .label = "esc" } };
 
-/// The main shot, in seconds into the video.
-const script = [_]Step{
+/// The main shot, in seconds into the video (written without the `lead`,
+/// which `later` adds): only what 0.2 brings (the apps, math and Google
+/// were the first film's).
+const script = later([_]Step{
     .{ .at = 2.4, .op = .show },
-    .{ .at = 4.0, .op = say("Any app, as you type", "") },
-} ++ typing(4.0, "saf", 0.11) ++ [_]Step{
-    .{ .at = 4.8, .op = .accept },
-    .{ .at = 4.8, .op = say("Any app, as you type", "→") },
-    .{ .at = 5.6, .op = .clear },
-    .{ .at = 5.8, .op = say("Math, as you type", "") },
-} ++ typing(5.8, "2^10 * 3", 0.075) ++ [_]Step{
-    .{ .at = 7.2, .op = .enter },
-    .{ .at = 7.2, .op = say("Copied", "↩") },
-    .{ .at = 8.3, .op = .clear },
-    .{ .at = 8.5, .op = say("Google suggests as you type", "") },
-} ++ typing(8.5, "liquid gl", 0.09) ++ [_]Step{
-    .{ .at = 10.3, .op = tab },
-    .{ .at = 10.3, .op = say("Tab takes the suggestion", "Tab") },
-    .{ .at = 11.7, .op = .enter },
-    .{ .at = 11.7, .op = say("Results, right in the panel", "↩") },
-    .{ .at = 14.4, .op = esc },
-    .{ .at = 14.4, .op = say("", "") },
-    .{ .at = 14.7, .op = .clear },
-    .{ .at = 15.1, .op = .{ .key = .{ .sc = .{ .key = ',', .cmd = true }, .label = "⌘ ," } } },
-    .{ .at = 15.1, .op = say("Settings, in the panel", "⌘ ,") },
-    .{ .at = 17.6, .op = esc },
-    .{ .at = 17.6, .op = say("", "") },
-    .{ .at = 18.0, .op = say("Raycast extensions", "") },
-} ++ typing(18.0, "hacker", 0.09) ++ [_]Step{
-    .{ .at = 19.0, .op = .ext_list },
-    .{ .at = 19.0, .op = say("Raycast extensions", "↩") },
-    .{ .at = 20.4, .op = down },
-    .{ .at = 20.8, .op = down },
-    .{ .at = 21.4, .op = .{ .key = .{ .sc = .{ .key = 'k', .cmd = true }, .label = "⌘ K" } } },
-    .{ .at = 21.4, .op = say("Their actions", "⌘ K") },
-    .{ .at = 22.7, .op = .ext_stop },
-    .{ .at = 22.7, .op = say("", "") },
-    .{ .at = 23.0, .op = say("Raycast script commands, run in Zig", "") },
-} ++ typing(23.0, "system", 0.08) ++ [_]Step{
-    .{ .at = 23.8, .op = .ext_script },
-    .{ .at = 23.8, .op = say("Raycast script commands, run in Zig", "↩") },
-    .{ .at = 25.9, .op = .ext_stop },
-    .{ .at = 25.9, .op = say("", "") },
-    .{ .at = 26.1, .op = .clear },
-    .{ .at = end_at, .op = .end },
-};
+    .{ .at = 3.0, .op = say("New in Nanolight 2.0", "") },
+    .{ .at = 5.1, .op = .{ .key = .{ .sc = .{ .key = ',', .cmd = true }, .label = "⌘ ," } } },
+    .{ .at = 5.1, .op = say("Settings, in the panel", "⌘ ,") },
+    .{ .at = 7.6, .op = esc },
+    .{ .at = 7.6, .op = say("", "") },
+    .{ .at = 8.0, .op = say("Raycast extensions", "") },
+} ++ typing(8.0, "hacker", 0.09) ++ [_]Step{
+    .{ .at = 9.0, .op = .ext_list },
+    .{ .at = 9.0, .op = say("Raycast extensions", "↩") },
+    .{ .at = 10.4, .op = down },
+    .{ .at = 10.8, .op = down },
+    .{ .at = 11.4, .op = .{ .key = .{ .sc = .{ .key = 'k', .cmd = true }, .label = "⌘ K" } } },
+    .{ .at = 11.4, .op = say("Their actions", "⌘ K") },
+    .{ .at = 12.7, .op = .ext_stop },
+    .{ .at = 12.7, .op = say("", "") },
+    .{ .at = 13.0, .op = say("Raycast script commands, run in Zig", "") },
+} ++ typing(13.0, "system", 0.08) ++ [_]Step{
+    .{ .at = 13.8, .op = .ext_script },
+    .{ .at = 13.8, .op = say("Raycast script commands, run in Zig", "↩") },
+    .{ .at = 15.9, .op = .ext_stop },
+    .{ .at = 15.9, .op = say("", "") },
+    .{ .at = 16.1, .op = .clear },
+}) ++ [_]Step{.{ .at = end_at, .op = .end }};
+
+fn later(comptime steps: anytype) @TypeOf(steps) {
+    var out = steps;
+    for (&out) |*s| s.at += lead;
+    return out;
+}
 
 /// The laptop's display: the desktop, then ⌘Space.
 const screen_script = [_]Step{.{ .at = open_at, .op = .show }};
 
+/// The camera: the whole stage, held still. Zooming in and out with each
+/// shot, and following the panel's springing height as results came and
+/// went, made the frame bob with every key; the panel is large enough to
+/// read without it.
 const centre: cam.View = .{ .zoom = 1, .cx = scene_mod.width / 2, .cy = scene_mod.height / 2 };
-/// How close the camera means to be: eased between these on an S-curve.
-/// It never goes closer than keeps the panel and its label in frame
-/// (`follow`), so a list that grows pulls it back.
-fn closer(z: f32) cam.View {
-    return .{ .zoom = z, .cx = centre.cx, .cy = centre.cy };
-}
-const moves = [_]cam.Move{
-    .{ .at = 3.9, .len = 1.3, .to = closer(1.45) },
-    .{ .at = 5.6, .len = 0.8, .to = closer(1.5) },
-    .{ .at = 8.3, .len = 0.8, .to = closer(1.6) },
-    .{ .at = 11.65, .len = 0.9, .to = closer(1.0) },
-    .{ .at = 14.6, .len = 0.8, .to = closer(1.3) },
-    .{ .at = 17.8, .len = 0.8, .to = closer(1.6) },
-    .{ .at = 18.95, .len = 0.9, .to = closer(1.0) },
-    .{ .at = 22.8, .len = 0.8, .to = closer(1.6) },
-    .{ .at = 23.75, .len = 0.9, .to = closer(1.2) },
-};
-
-/// The camera on the panel: the zoom meant now, but no closer than fits
-/// the panel (its top, its springing height) and its label, and centred
-/// on them.
-fn frame(sc: *const Scene, now: f32) cam.View {
-    const meant = cam.camera(centre, &moves, now).zoom;
-    const top = sc.top - 26;
-    const bottom = sc.top + sc.s.last_h + scene_mod.label_room;
-    const fit = scene_mod.height / (bottom - top);
-    return .{ .zoom = @max(1, @min(meant, fit)), .cx = centre.cx, .cy = (top + bottom) / 2 };
-}
 
 /// What each loupe lifts: text the scene shows (found as it opens), else
-/// a stage point.
+/// a stage point. None in this cut (the first film's lifted the math's
+/// answer and Google's completion).
 const Lift = struct { loupe: cam.Loupe, find: []const u8 = "", dy: f32 = 0 };
-const lifts = [_]Lift{
-    .{ .loupe = .{ .at = 6.5, .mag = 1.65, .hold = 0.6 }, .find = "3,072", .dy = 14 },
-    // The faint completion, then Tab making it the query's.
-    .{ .loupe = .{ .at = 9.75, .mag = 1.8, .hold = 0.5, .x = scene_mod.panel_x + 150, .y = scene_mod.panel_top + 29, .w = 900, .h = 220 } },
-};
+const lifts = [_]Lift{};
 
 /// The apps the panel finds: Apple's own and Chrome (the typo's), the same
 /// on any Mac, rather than whatever this one has.
@@ -214,7 +182,7 @@ fn cues(io: std.Io) !void {
         try o.print("{s} {d:.3}\n", .{ kind, st.at });
     };
     for (lifts) |l| try o.print("lift {d:.3}\n", .{l.loupe.at});
-    try o.print("page {d:.3}\nend {d:.3}\nname {d:.3}\n", .{ 12.05, end_at, end_at + 0.7 });
+    try o.print("end {d:.3}\nname {d:.3}\n", .{ end_at, end_at + 0.7 });
     // The PC part's turns (tools/promo.sh splices it in).
     try o.print("cross {d:.3}\ncross {d:.3}\n", .{ mac_until, end_at });
     try o.flush();
@@ -286,7 +254,7 @@ pub fn main(init: std.process.Init) !void {
 
     const steps: []const Step = if (screen) &screen_script else &script;
     // The main shot runs from before it is seen, so the panel has opened.
-    const start: f32 = if (screen) 0 else 2.2;
+    const start: f32 = if (screen) 0 else 2.2 + lead;
     const first: f32 = if (from >= 0) from else if (screen) 0 else main_from;
     const last: f32 = if (to >= 0) to else if (screen) laptop else total;
     t.time = start;
@@ -307,11 +275,7 @@ pub fn main(init: std.process.Init) !void {
         const now = start + @as(f32, @floatFromInt(i)) / fps;
         if (now >= last - 0.5 / @as(f32, fps)) break;
         sc.now = now;
-        // Followed smoothly, as an editor's auto-zoom does (a fifth of a
-        // second to settle), from the frame before's panel.
-        const want = frame(&sc, now);
-        const settle: f32 = if (i == 0) 1 else 1 - @exp(-1.0 / (@as(f32, fps) * 0.16));
-        sc.view = .{ .zoom = cam.mix(sc.view.zoom, want.zoom, settle), .cx = want.cx, .cy = cam.mix(sc.view.cy, want.cy, settle) };
+        sc.view = centre;
         while (next < steps.len and steps[next].at <= now) : (next += 1) switch (steps[next].op) {
             .show => {
                 sc.shown = true;
