@@ -277,26 +277,52 @@ pub fn systemKeys(buf: []SystemKey) []SystemKey {
     const pool = objc.Pool.push();
     defer pool.pop();
     const ud = objc.msg(objc.Object, objc.class("NSUserDefaults"), "standardUserDefaults", .{});
-    const domain = objc.msg(?objc.Object, ud, "persistentDomainForName:", .{objc.nsString("com.apple.symbolichotkeys")}) orelse return buf[0..0];
-    const table = objc.msg(?objc.Object, domain, "objectForKey:", .{objc.nsString("AppleSymbolicHotKeys")}) orelse return buf[0..0];
+    const domain = as(objc.msg(?objc.Object, ud, "persistentDomainForName:", .{objc.nsString("com.apple.symbolichotkeys")}), "NSDictionary") orelse return buf[0..0];
+    return readTable(objc.msg(?objc.Object, domain, "objectForKey:", .{objc.nsString("AppleSymbolicHotKeys")}), buf);
+}
+
+/// `obj` if it is a `cls`, else null. A defaults value can be any property
+/// list type, and not always the one expected: a boolean where a
+/// dictionary was (macOS 27), which `objectForKey:` aborted on (#14).
+fn as(obj: ?objc.Object, comptime cls: [:0]const u8) ?objc.Object {
+    const o = obj orelse return null;
+    return if (objc.msg(objc.BOOL, o, "isKindOfClass:", .{objc.class(cls)})) o else null;
+}
+
+fn field(dict: objc.Object, comptime key: []const u8, comptime cls: [:0]const u8) ?objc.Object {
+    return as(objc.msg(?objc.Object, dict, "objectForKey:", .{objc.nsString(key)}), cls);
+}
+
+fn item(array: objc.Object, i: objc.NSUInteger, comptime cls: [:0]const u8) ?objc.Object {
+    return as(objc.msg(?objc.Object, array, "objectAtIndex:", .{i}), cls);
+}
+
+/// The shortcuts in `AppleSymbolicHotKeys`: id → { enabled, value: {
+/// parameters: [char, key code, modifiers] } }. Whatever isn't shaped so
+/// is passed over.
+fn readTable(table_in: ?objc.Object, buf: []SystemKey) []SystemKey {
+    const table = as(table_in, "NSDictionary") orelse return buf[0..0];
     const keys = objc.msg(objc.Object, table, "allKeys", .{});
     var n: usize = 0;
     for (0..objc.msg(objc.NSUInteger, keys, "count", .{})) |i| {
         if (n == buf.len) break;
         const k = objc.msg(objc.Object, keys, "objectAtIndex:", .{i});
-        const entry = objc.msg(?objc.Object, table, "objectForKey:", .{k}) orelse continue;
-        const enabled = objc.msg(?objc.Object, entry, "objectForKey:", .{objc.nsString("enabled")}) orelse continue;
-        const value = objc.msg(?objc.Object, entry, "objectForKey:", .{objc.nsString("value")}) orelse continue;
-        const params = objc.msg(?objc.Object, value, "objectForKey:", .{objc.nsString("parameters")}) orelse continue;
+        // Ids are strings ("64"); numbers read as well.
+        if (as(k, "NSString") == null and as(k, "NSNumber") == null) continue;
+        const entry = as(objc.msg(?objc.Object, table, "objectForKey:", .{k}), "NSDictionary") orelse continue;
+        const enabled = field(entry, "enabled", "NSNumber") orelse continue;
+        const value = field(entry, "value", "NSDictionary") orelse continue;
+        const params = field(value, "parameters", "NSArray") orelse continue;
         if (objc.msg(objc.NSUInteger, params, "count", .{}) < 3) continue;
-        const key: objc.NSInteger = objc.msg(objc.NSInteger, objc.msg(objc.Object, params, "objectAtIndex:", .{@as(objc.NSUInteger, 1)}), "integerValue", .{});
+        const code = item(params, 1, "NSNumber") orelse continue;
+        const mods = item(params, 2, "NSNumber") orelse continue;
+        const key = objc.msg(objc.NSInteger, code, "integerValue", .{});
         if (key < 0 or key > 127) continue;
-        const flags = objc.msg(objc.NSInteger, objc.msg(objc.Object, params, "objectAtIndex:", .{@as(objc.NSUInteger, 2)}), "integerValue", .{});
         buf[n] = .{
-            .id = @intCast(@max(0, objc.msg(objc.NSInteger, k, "integerValue", .{}))),
+            .id = @intCast(std.math.clamp(objc.msg(objc.NSInteger, k, "integerValue", .{}), 0, std.math.maxInt(u32))),
             .enabled = objc.msg(objc.BOOL, enabled, "boolValue", .{}),
             .key = @intCast(key),
-            .mods = @bitCast(@as(i64, flags)),
+            .mods = @bitCast(@as(i64, objc.msg(objc.NSInteger, mods, "integerValue", .{}))),
         };
         n += 1;
     }
@@ -433,4 +459,33 @@ test "a recorded key clashes with the system's shortcut on the same key" {
     const c = clash(recorded(7, ns_opt, 'x').key, &sys, &.{});
     try std.testing.expectEqualStrings("a macOS shortcut", c.system.?);
     try std.testing.expect(clash(recorded(7, ns_cmd, 'x').key, &sys, &.{}).clear());
+}
+
+test "the system's shortcuts are read past entries of the wrong type (#14)" {
+    if (!mac) return error.SkipZigTest;
+    const pool = objc.Pool.push();
+    defer pool.pop();
+    // ⌘Space for Spotlight; then a boolean for an entry, for its value,
+    // for its parameters, a string for a key code, and no value at all.
+    const xml =
+        \\<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict>
+        \\<key>64</key><dict><key>enabled</key><true/><key>value</key><dict><key>parameters</key>
+        \\<array><integer>32</integer><integer>49</integer><integer>1048576</integer></array></dict></dict>
+        \\<key>65</key><true/>
+        \\<key>60</key><dict><key>enabled</key><false/><key>value</key><true/></dict>
+        \\<key>61</key><dict><key>enabled</key><true/><key>value</key><dict><key>parameters</key><true/></dict></dict>
+        \\<key>62</key><dict><key>enabled</key><true/><key>value</key><dict><key>parameters</key>
+        \\<array><integer>32</integer><string>49</string><integer>0</integer></array></dict></dict>
+        \\<key>63</key><dict><key>enabled</key><true/></dict>
+        \\</dict></plist>
+    ;
+    const data = objc.msg(objc.Object, objc.class("NSData"), "dataWithBytes:length:", .{ @as(*const anyopaque, xml.ptr), @as(objc.NSUInteger, xml.len) });
+    const table = objc.msg(?objc.Object, objc.class("NSPropertyListSerialization"), "propertyListWithData:options:format:error:", .{ data, @as(objc.NSUInteger, 0), @as(?*anyopaque, null), @as(?*anyopaque, null) });
+    var buf: [8]SystemKey = undefined;
+    const got = readTable(table, &buf);
+    try std.testing.expectEqual(@as(usize, 1), got.len);
+    try std.testing.expectEqual(SystemKey{ .id = 64, .enabled = true, .key = 49, .mods = ns_cmd }, got[0]);
+    // The table itself the wrong type: nothing, no abort.
+    const yes = objc.msg(objc.Object, objc.class("NSNumber"), "numberWithBool:", .{objc.YES});
+    try std.testing.expectEqual(@as(usize, 0), readTable(yes, &buf).len);
 }
