@@ -760,3 +760,76 @@ test "on a PC the panel's keys are Ctrl's, and Settings says so" {
     try std.testing.expect(t.hasText("Alt Space"));
     try std.testing.expect(t.hasText("Sync Across Computers"));
 }
+
+/// The clipboard row the highlight bar is drawn on, read off the pixels:
+/// the one whose middle differs most from the field's background.
+fn highlightedClipRow(t: *ui.Tester, n: usize) !usize {
+    const px = try t.render(std.testing.allocator);
+    defer px.deinit(std.testing.allocator);
+    const scale = @as(f32, @floatFromInt(px.width)) / view.width;
+    const lum = struct {
+        fn at(p: anytype, x: f32, y: f32) i32 {
+            const i = (@as(usize, @intFromFloat(y)) * p.width + @as(usize, @intFromFloat(x))) * 4;
+            return @as(i32, p.bytes[i]) + p.bytes[i + 1] + p.bytes[i + 2];
+        }
+    }.at;
+    // The list starts under the 58 pt field, its rule and 6 pt of padding;
+    // the middle of a row, right of its label, is bar or background only.
+    var best: usize = 0;
+    var best_d: i32 = -1;
+    const base = lum(px, 600 * scale, 30 * scale);
+    for (0..n) |i| {
+        const y = (58 + 1 + 6 + 24 + 48 * @as(f32, @floatFromInt(i))) * scale;
+        const d: i32 = @intCast(@abs(lum(px, 600 * scale, y) - base));
+        if (d > best_d) {
+            best_d = d;
+            best = i;
+        }
+    }
+    try std.testing.expect(best_d > 6);
+    return best;
+}
+
+test "the clipboard highlight stays on its row through the caret's blinks" {
+    const t = std.testing;
+    var ix: Index = .init(t.allocator);
+    defer ix.deinit();
+    var store: @import("clipboard_store.zig").Store = .init(t.allocator);
+    defer store.deinit();
+    for (0..8) |i| {
+        var buf: [32]u8 = undefined;
+        _ = try store.add(.text, try std.fmt.bufPrint(&buf, "Item {d}", .{i}), 100);
+    }
+    var s: view.Nanolight = .{ .index = &ix };
+    defer s.query.deinit();
+    defer s.clip.query.deinit();
+    s.clip.store = &store;
+    s.clip.enabled = true;
+    s.openClipboard();
+    var tester: ui.Tester = undefined;
+    try tester.init(t.allocator, .init(&s, view.Nanolight.view), .{ .width = view.width, .height = view.max_height });
+    defer tester.deinit();
+    tester.settle(1);
+    try t.expectEqual(@as(usize, 0), try highlightedClipRow(&tester, 6));
+    // ↓ three times in quick succession, as in the recording.
+    for (0..3) |_| {
+        _ = tester.shortcut(.{ .key = ui.Shortcut.down });
+        tester.advance(0.12);
+    }
+    try t.expectEqual(@as(usize, 3), s.clip.sel);
+    try t.expectEqual(@as(usize, 3), try highlightedClipRow(&tester, 6));
+    // No keys: the caret blinks every half second. The bar never moves.
+    for (0..6) |_| {
+        tester.advance(0.25);
+        try t.expectEqual(@as(usize, 3), s.clip.sel);
+        try t.expectEqual(@as(usize, 3), try highlightedClipRow(&tester, 6));
+    }
+    // ↑ once, then blinks again.
+    _ = tester.shortcut(.{ .key = ui.Shortcut.up });
+    tester.advance(0.05);
+    try t.expectEqual(@as(usize, 2), try highlightedClipRow(&tester, 6));
+    for (0..4) |_| {
+        tester.advance(0.25);
+        try t.expectEqual(@as(usize, 2), try highlightedClipRow(&tester, 6));
+    }
+}
