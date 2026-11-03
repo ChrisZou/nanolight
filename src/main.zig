@@ -536,7 +536,13 @@ const Live = struct {
         // The panel there; the window is the shadow's margin bigger.
         w.setPosition(f.origin.x + (f.size.width - view.width) / 2 - view.shadow_margin, top + f.size.height * 0.2 - view.shadow_margin);
         l.s.reveal();
-        if (l.s.clip_mode) l.s.clip.query.focus();
+        if (l.s.clip_mode) {
+            l.s.clip.query.focus();
+            // Populate rows before measuring height so glass matches clipboard UI.
+            var arena: std.heap.ArenaAllocator = .init(l.app.gpa);
+            defer arena.deinit();
+            l.s.clip.fill(arena.allocator());
+        }
         // Glass matches the panel before the window appears (avoids a mismatched
         // vibrancy flash under the first paint / enter motion).
         const h = if (l.s.clip_mode) l.s.clip.height() else if (l.o.active) l.o.height() else l.s.height();

@@ -2,12 +2,16 @@
 //! clipboard queries must never reach web suggestions or account sync.
 const std = @import("std");
 const ui = @import("nanoui").ui;
+const motion = ui.motion;
 const history = @import("clipboard_store.zig");
 
 pub const Action = enum { enable, paste, save, accessibility, close };
 pub const Hooks = struct { ctx: *anyopaque, func: *const fn (*anyopaque, Action, u64) void };
 const row_h: f32 = 48;
 const visible_rows = 9;
+const list_pad: f32 = 6;
+/// Match `view.width` without importing view (avoids a cycle).
+const panel_w: f32 = 680;
 
 pub const Panel = struct {
     store: ?*history.Store = null,
@@ -76,11 +80,11 @@ pub const Panel = struct {
         if (p.n == 0) return;
         const store = p.store orelse return;
         if (c.shortcut(.{ .key = S.down }) or c.shortcut(.{ .key = 'n', .ctrl = true })) {
-            p.sel = (p.sel + 1) % p.n;
+            if (p.sel + 1 < p.n) p.sel += 1;
             p.scroll_selection = true;
         }
         if (c.shortcut(.{ .key = S.up }) or c.shortcut(.{ .key = 'p', .ctrl = true })) {
-            p.sel = (p.sel + p.n - 1) % p.n;
+            if (p.sel > 0) p.sel -= 1;
             p.scroll_selection = true;
         }
         if (c.shortcut(.{ .key = 0x7f, .alt = true })) {
@@ -100,6 +104,7 @@ pub const Panel = struct {
 
     /// Draws inside the launcher's shell; same neutral glass and spacing.
     pub fn draw(p: *Panel, c: *ui.Context, colors: anytype, h: f32) void {
+        const q0 = std.hash.Wyhash.hash(0, p.query.text());
         p.fill(c.arena.allocator());
         p.keys(c);
         {
@@ -107,7 +112,9 @@ pub const Panel = struct {
             defer bar.end();
             ui.icon(c, "clipboard", .{ .size = 19, .weight = .medium, .color = colors.sub, .frame = 22 });
             const field = ui.textField(c, &p.query, .{ .bare = true, .size = 21, .width = .fill, .placeholder = "Search clipboard…", .placeholder_color = colors.sub.alpha(0.75), .color = colors.text });
-            p.fill(c.arena.allocator());
+            // Refill only when typing changed the query — avoids a second fill
+            // remapping selection / scroll on every arrow key.
+            if (std.hash.Wyhash.hash(0, p.query.text()) != q0) p.fill(c.arena.allocator());
             if (field.submitted) p.activate();
         }
         ui.div(c).wFull().h(1).bg(colors.hair).end();
@@ -121,19 +128,25 @@ pub const Panel = struct {
                     if (ui.button(c, "Enable Clipboard History", .{}).clicked) p.action(.enable, 0);
                 } else ui.text(c, if (p.query.text().len > 0) "No matches" else "No clipboard history", .{ .size = 14, .color = colors.sub });
             } else {
-                const list = ui.div(c).column().wFull().hFull().p(6).scrollY();
+                const list = ui.div(c).column().wFull().hFull().p(list_pad).scrollY();
                 defer list.end();
+                // Scroll against the target panel height, not a springing frame h.
                 if (p.scroll_selection) {
                     const offset = c.scroll.get(list.id()) orelse 0;
                     const y = @as(f32, @floatFromInt(p.sel)) * row_h;
-                    const room = @max(row_h, h - 110);
+                    const room = @max(row_h, p.height() - 110);
                     if (y < offset) c.setScroll(list.id(), .y, y) else if (y + row_h > offset + room) c.setScroll(list.id(), .y, y + row_h - room);
                     p.scroll_selection = false;
                 }
+                // One absolute highlight bar, instant — matches main list, no spring overshoot.
+                const sel_y = @as(f32, @floatFromInt(p.sel)) * row_h;
+                const hy = motion.number(c, "clip-sel-y", sel_y, .instant);
+                ui.div(c).absolute().offset(0, hy).w(panel_w - list_pad * 2).h(row_h).rounded(10).bg(colors.sel).border(colors.rim).end();
                 for (p.ids[0..p.n], 0..) |id, i| {
                     const item = p.store.?.get(id) orelse continue;
                     const label = title(c, item);
-                    const row = ui.div(c).row().wFull().h(row_h).px(10).gap(12).itemsCenter().rounded(10).bg(if (i == p.sel) colors.sel else ui.Color.transparent).control();
+                    ui.key(c, c.print("clip-row-{d}", .{id}));
+                    const row = ui.div(c).row().wFull().h(row_h).px(10).gap(12).itemsCenter().rounded(10).control();
                     defer row.end();
                     c.addA11y(row.index, .button, label, "", i == p.sel, true);
                     if (row.clicked()) {

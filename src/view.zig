@@ -214,17 +214,28 @@ pub const Nanolight = struct {
         };
 
         if (s.clip_mode) {
-            s.clip.fill(c.arena.allocator());
-            s.clip.draw(c, p, s.follow(c, s.clip.height()));
+            s.clipFillDraw(c, p);
             return;
         }
 
+        // Rows before keys so Enter / ⌘1… open the right item — and so
+        // openClipboard can run before any main chrome is drawn this frame.
+        s.rebuild();
         s.keys(c);
+        if (s.clip_mode) {
+            s.clipFillDraw(c, p);
+            return;
+        }
+
         const submitted = s.header(c, p);
         s.rebuild();
         // Typing takes the page away: the rows are for the new words.
         if (s.previewing and std.hash.Wyhash.hash(0, s.query.text()) != s.preview_q) s.back();
         if (submitted) s.activate(c);
+        if (s.clip_mode) {
+            s.clipFillDraw(c, p);
+            return;
+        }
         const h = s.follow(c, s.height());
         {
             const body = ui.div(c).column().wFull().h(h - header_h).clip();
@@ -245,15 +256,23 @@ pub const Nanolight = struct {
     }
 
     /// The panel's height, springing to `target`; a window follows it.
+    /// Large jumps (enter/leave clipboard) snap so glass never grows empty.
     pub fn follow(s: *Nanolight, c: *ui.Context, target: f32) f32 {
-        const h = motion.number(c, "panel-h", @min(target, max_height), .{ .spring = spring });
+        const capped = @min(target, max_height);
+        const snap = s.last_h <= 0 or @abs(capped - s.last_h) > 24;
+        const tr: motion.Transition = if (snap) .instant else .{ .spring = spring };
+        const h = motion.number(c, "panel-h", capped, tr);
+        if (snap) {
+            if (s.host) |host| if (host.resize) |f| if (s.last_h != capped) f(host.ctx, capped);
+            s.last_h = capped;
+            return capped;
+        }
         if (s.host) |host| if (host.resize) |f| {
-            // Coarser threshold + near-target snap: vibrancy setFrame spam
-            // (every spring tick) strobes NSVisualEffectView.
-            if (@abs(h - target) < 0.75) {
-                if (s.last_h != target) {
-                    s.last_h = target;
-                    f(host.ctx, target);
+            // Near-target snap: vibrancy setFrame spam strobes NSVisualEffectView.
+            if (@abs(h - capped) < 0.75) {
+                if (s.last_h != capped) {
+                    s.last_h = capped;
+                    f(host.ctx, capped);
                 }
             } else if (@abs(h - s.last_h) > 1.5) {
                 s.last_h = h;
@@ -263,7 +282,12 @@ pub const Nanolight = struct {
         return h;
     }
 
-    /// Arrows, ^N/^P and Escape, before the field sees them.
+    fn clipFillDraw(s: *Nanolight, c: *ui.Context, p: Palette) void {
+        s.clip.fill(c.arena.allocator());
+        s.clip.draw(c, p, s.follow(c, s.clip.height()));
+    }
+
+    /// Arrows, ^N/^P, Enter and Escape, before the field sees them.
     fn keys(s: *Nanolight, c: *ui.Context) void {
         const S = ui.Shortcut;
         if (s.previewing) {
@@ -273,6 +297,26 @@ pub const Nanolight = struct {
         }
         // ⌘↩: a search in the browser rather than in the panel.
         if (c.shortcut(.{ .key = S.enter, .cmd = true })) s.activateOut(c);
+        // Enter / insertNewline activates before the header draws, so
+        // clipboard can replace the whole shell this frame.
+        var enter = c.input.key == .enter and !c.input.cmd;
+        if (!enter and !c.input.shift) {
+            for (c.input.ops) |op| {
+                switch (op) {
+                    .command => |cmd| {
+                        if (cmd == .insert_newline) enter = true;
+                    },
+                    else => {},
+                }
+                if (enter) break;
+            }
+        }
+        if (enter) {
+            c.input.key = null;
+            c.input.ops = &.{};
+            s.activate(c);
+            return;
+        }
         // Tab takes the faint completion, as → does.
         const more = s.completion();
         if (more.len > 0 and c.shortcut(.{ .key = S.tab })) s.take(more);
@@ -786,6 +830,15 @@ pub const Nanolight = struct {
         s.back();
         s.clip_mode = true;
         s.clip.open();
+        // Resize glass immediately so the next paint is not a tall empty shell.
+        // n may still be stale until fill; follow snaps again after fill.
+        if (s.host) |host| if (host.resize) |f| {
+            const h = s.clip.height();
+            s.last_h = h;
+            f(host.ctx, h);
+        } else {
+            s.last_h = -1;
+        };
     }
 
     /// ⌘↩ on the selected row: a search opens in the browser.

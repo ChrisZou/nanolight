@@ -221,7 +221,7 @@ test "the panel finds, moves, answers and hands off" {
     try std.testing.expect(t.hasText("Suggestions"));
     try std.testing.expect(t.hasText("Safari"));
     // After an automatic update, the footer says so in place of the name.
-    try std.testing.expect(t.hasText("Nanolight 0.1.0 (2) · 5 apps"));
+    try std.testing.expect(t.hasText("Nanolight 0.1.0 (3) · 5 apps"));
     s.note = "Updated to 0.1.3";
     t.settle(1);
     try std.testing.expect(t.hasText("Updated to 0.1.3 · 5 apps"));
