@@ -492,7 +492,13 @@ const Live = struct {
         // The panel grew or shrank under a still pointer.
         l.through.update();
         const g = l.glass orelse return;
+        // Disable AppKit implicit layer animations: setFrame on the vibrancy
+        // view otherwise fights the next spring tick and strobes.
+        const tx = objc.class("CATransaction");
+        objc.msg(void, tx, "begin", .{});
+        objc.msg(void, tx, "setDisableActions:", .{objc.YES});
         objc.msg(void, g, "setFrame:", .{glassFrame(h)});
+        objc.msg(void, tx, "commit", .{});
     }
 
     fn toggle(ctx: *anyopaque) void {
@@ -708,7 +714,11 @@ fn backdrop(w: *nanoui.Window, radius: f64, height: f32) ?objc.Object {
     objc.release(v);
     // In a flipped host view, from the top; the window never resizes.
     objc.msg(void, v, "setAutoresizingMask:", .{@as(objc.NSUInteger, 0)});
+    const tx = objc.class("CATransaction");
+    objc.msg(void, tx, "begin", .{});
+    objc.msg(void, tx, "setDisableActions:", .{objc.YES});
     objc.msg(void, v, "setFrame:", .{glassFrame(height)});
+    objc.msg(void, tx, "commit", .{});
     return v;
 }
 

@@ -243,9 +243,18 @@ pub const Nanolight = struct {
     /// The panel's height, springing to `target`; a window follows it.
     pub fn follow(s: *Nanolight, c: *ui.Context, target: f32) f32 {
         const h = motion.number(c, "panel-h", @min(target, max_height), .{ .spring = spring });
-        if (s.host) |host| if (host.resize) |f| if (@abs(h - s.last_h) > 0.25) {
-            s.last_h = h;
-            f(host.ctx, h);
+        if (s.host) |host| if (host.resize) |f| {
+            // Coarser threshold + near-target snap: vibrancy setFrame spam
+            // (every spring tick) strobes NSVisualEffectView.
+            if (@abs(h - target) < 0.75) {
+                if (s.last_h != target) {
+                    s.last_h = target;
+                    f(host.ctx, target);
+                }
+            } else if (@abs(h - s.last_h) > 1.5) {
+                s.last_h = h;
+                f(host.ctx, h);
+            }
         };
         return h;
     }
