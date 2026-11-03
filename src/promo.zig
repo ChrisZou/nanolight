@@ -1,4 +1,4 @@
-//! The promo: 43 seconds at 60 fps, of what is new in Nanolight 2.0 (the
+//! The promo: 40 seconds at 60 fps, of what is new in Nanolight 2.0 (the
 //! 0.2 releases), after its titles (tools/promo.sh). The interface
 //! is the shot: Apple's MacBook Air (Blender, tools/promo/laptop.py)
 //! pushes into its display as ⌘Space opens the panel, then the panel fills

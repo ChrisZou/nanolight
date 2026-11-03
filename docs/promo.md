@@ -1,20 +1,20 @@
 # The promo
 
-[promo.mp4](promo.mp4) is 43 seconds of what is new in Nanolight 2.0 (the 0.2 releases), 1920 × 1080 at 60 fps. [promo-preview.gif](promo-preview.gif) is the same video, silent and smaller. `tools/promo.sh` makes both in a few minutes, once the Windows and Linux recordings are in `zig-out/promo` (below).
+[promo.mp4](promo.mp4) is 40 seconds of what is new in Nanolight 2.0 (the 0.2 releases), 1920 × 1080 at 60 fps. [promo-preview.gif](promo-preview.gif) is the same video, silent and smaller. `tools/promo.sh` makes both in a few minutes, once the Windows and Linux recordings are in `zig-out/promo` (below).
 
 | Time | Shot |
 | --- | --- |
-| 0:00 | Titles over black: "Nanolight is now on Mac · Windows · Linux", then the icon and "Introducing Nanolight 2.0, with Raycast extension support" |
-| 0:04 | The titles dissolve into a MacBook Air and a Dell XPS 13 side by side in the dark; the camera arcs down onto them from high and off to the side |
-| 0:07 | ⌘Space and Ctrl Space open the panel on both at once; the camera pushes into the Mac's display until it fills the frame |
-| 0:09 | The panel fills the frame: "New in Nanolight 2.0" |
-| 0:11 | ⌘, opens Settings in the panel |
-| 0:14 | "hacker": a Raycast extension (Hacker News) runs in the panel; ⌘K shows its actions |
-| 0:19 | "system": a Raycast script command, run by Nanolight itself, its output in the panel |
-| 0:22 | The pivot: the MacBook pulls back, the camera pans across to the XPS showing Windows |
-| 0:26 | "Now on Windows": the System Info script command on Windows |
-| 0:30 | "And Linux": Hacker News on Linux (Xfce), and its actions on Ctrl K |
-| 0:38 | The panel's rectangle becomes the icon beside the name; "Mac · Windows · Linux" |
+| 0:00 | Titles on frosted glass, the MacBook Air and the Dell XPS 13 out of focus behind it: "Nanolight is now on Mac · Windows · Linux", then the icon and "Introducing Nanolight 2.0, with Raycast extension support" |
+| 0:04 | The glass clears; the camera settles on the two laptops side by side in the dark |
+| 0:05 | ⌘Space and Ctrl Space open the panel on both at once; the camera pushes into the Mac's display until it fills the frame |
+| 0:06 | The panel fills the frame: "New in Nanolight 2.0" |
+| 0:08 | ⌘, opens Settings in the panel |
+| 0:11 | "hacker": a Raycast extension (Hacker News) runs in the panel; ⌘K shows its actions |
+| 0:16 | "system": a Raycast script command, run by Nanolight itself, its output in the panel |
+| 0:19 | The pivot: the MacBook pulls back, the camera pans across to the XPS showing Windows |
+| 0:23 | "Now on Windows": the System Info script command on Windows |
+| 0:27 | "And Linux": Hacker News on Linux (Xfce), and its actions on Ctrl K |
+| 0:35 | The panel's rectangle becomes the icon beside the name; "Mac · Windows · Linux" |
 
 The apps, math and Google's suggestions were the first film's subject (v0.1); this one shows only what 2.0 adds. The titles are drawn by `tools/promo/title.swift`.
 

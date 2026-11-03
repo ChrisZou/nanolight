@@ -1,5 +1,5 @@
 #!/bin/sh
-# The promo (src/promo.zig): 43 seconds of what is new in Nanolight 2.0, 1920x1080 at 60 fps, to
+# The promo (src/promo.zig): 40 seconds of what is new in Nanolight 2.0, 1920x1080 at 60 fps, to
 # docs/promo.mp4 and a silent preview, docs/promo-preview.gif. macOS, with
 # ffmpeg, Blender (/Applications/Blender.app, or $BLENDER) and Swift.
 #
@@ -37,12 +37,16 @@ for r in rec-win rec-win-open rec-linux; do
 done
 xps="$dir/dell-xps-13.usdz"
 [ -f "$xps" ] || curl -sfL -o "$xps" https://content.hmxmedia.com/dell-dx13260-laptop-AR/usdz/dell-dx13260-laptop-AR.usdz
-# The film after the titles; the titles (`intro` seconds, over black)
-# cross into it at `shift`, so everything in it lands that much later.
+# The film after the titles. The titles (`intro` seconds) sit on frosted
+# glass over the film's frame at `skip` (the two laptops, out of focus),
+# and the glass clears into the film from there at `shift`: what the
+# film had before `skip` isn't shown, and the rest lands `shift - skip`
+# later.
 body=39
-intro=4.3
+intro=4.6
 shift=3.7
-total=$(awk -v b="$body" -v s="$shift" 'BEGIN { print b + s }')
+skip=2.6
+total=$(awk -v b="$body" -v s="$shift" -v k="$skip" 'BEGIN { print b + s - k }')
 # Seconds into rec-win-open.mp4 at which Ctrl Space opens the panel: the
 # opening lines it up with the Mac's ⌘Space (src/promo.zig's open_at).
 win_key=${WIN_KEY:-2.55}
@@ -119,14 +123,17 @@ ffmpeg -loglevel error -y -i "$dir/laptop.mp4" -i "$dir/main.mp4" -i "$dir/pc.mp
     "[0]$n[l];[1]$n,split[m1][m2];[2]$n[p];[l][m1]xfade=transition=fade:duration=0.2:offset=5.2,trim=0:18.5,setpts=PTS-STARTPTS[mac];[m2]trim=start=28.9,setpts=PTS-STARTPTS[end];[mac][p]xfade=transition=fade:duration=0.2:offset=18.3[mp];[mp][end]xfade=transition=fade:duration=0.3:offset=34.1,fade=t=out:st=38.4:d=0.6[v]" \
     -map "[v]" $enc -t $body "$dir/body.mp4"
 
-# The titles, over black: "Nanolight is now on Mac · Windows · Linux",
-# then the icon and "Introducing Nanolight 2.0, with Raycast extension
-# support", which dissolves as the laptops come up out of the dark.
+# The titles, on frosted glass over the two laptops from the first frame:
+# "Nanolight is now on Mac · Windows · Linux", then the icon and
+# "Introducing Nanolight 2.0, with Raycast extension support"; then the
+# glass clears and the camera settles on both as their panels open.
 swift tools/promo/title.swift now "$dir/title-now.png"
 swift tools/promo/title.swift intro "$dir/title-intro.png" src/icon-256.png
-ffmpeg -loglevel error -y -f lavfi -i "color=black:s=1920x1080:r=60:d=$intro" \
-    -framerate 60 -loop 1 -t "$intro" -i "$dir/title-now.png" -framerate 60 -loop 1 -t "$intro" -i "$dir/title-intro.png" -i "$dir/body.mp4" -filter_complex \
-    "[1]format=rgba,fade=t=in:st=0.25:d=0.5:alpha=1,fade=t=out:st=1.75:d=0.4:alpha=1[a];[2]format=rgba,fade=t=in:st=2.3:d=0.5:alpha=1[b];[0][a]overlay[x];[x][b]overlay,$n[t];[3]$n[m];[t][m]xfade=transition=fade:duration=0.6:offset=$shift[v]" \
+ffmpeg -loglevel error -y -ss "$skip" -i "$dir/body.mp4" -frames:v 1 \
+    -vf "gblur=sigma=30,eq=saturation=1.4:brightness=-0.07,vignette=PI/4" "$dir/glass.png"
+ffmpeg -loglevel error -y -framerate 60 -loop 1 -t "$intro" -i "$dir/glass.png" \
+    -framerate 60 -loop 1 -t "$intro" -i "$dir/title-now.png" -framerate 60 -loop 1 -t "$intro" -i "$dir/title-intro.png" -ss "$skip" -i "$dir/body.mp4" -filter_complex \
+    "[0]noise=alls=5:allf=t,format=yuv420p[g];[1]format=rgba,fade=t=in:st=0.2:d=0.5:alpha=1,fade=t=out:st=1.75:d=0.4:alpha=1[a];[2]format=rgba,fade=t=in:st=2.3:d=0.5:alpha=1[b];[g][a]overlay[x];[x][b]overlay,$n[t];[3]$n[m];[t][m]xfade=transition=fade:duration=0.9:offset=$shift[v]" \
     -map "[v]" $enc -t "$total" "$dir/silent.mp4"
 
 # The sound, all synthesised: a soft pad at 86 BPM (Fmaj7, Dm9, Bbmaj7,
@@ -160,7 +167,7 @@ k=0
 ms() { awk -v s="$1" 'BEGIN { v = s * 1000; if (v < 0) v = 0; printf "%d", v }'; }
 while read -r kind at; do
     # The film's cues land `shift` later; the titles' (@) where they say.
-    case "$at" in @*) at=${at#@} ;; *) at=$(awk -v a="$at" -v s="$shift" 'BEGIN { print a + s }') ;; esac
+    case "$at" in @*) at=${at#@} ;; *) at=$(awk -v a="$at" -v s="$shift" -v k="$skip" 'BEGIN { print a + s - k }') ;; esac
     case "$kind" in
     key) k=$((k + 1)); f=$((2300 + (k % 3) * 190)); src="aevalsrc=exprs='0.16*sin(2*PI*$f*t)*exp(-115*t)+0.11*sin(2*PI*$((f / 2))*t)*exp(-75*t)':d=0.08:s=48000" ;;
     tab) src="aevalsrc=exprs='0.2*sin(2*PI*3300*t)*exp(-80*t)+0.12*sin(2*PI*1650*t)*exp(-50*t)':d=0.12:s=48000" ;;
