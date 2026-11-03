@@ -1,4 +1,6 @@
 # Tests Nanolight and builds its app on every push and pull request.
+# This fork is Mac-only (clipboard history, Picemon, Codex): no Windows or
+# Linux builds.
 name: CI
 
 on:
@@ -19,3 +21,4 @@ jobs:
           version: 0.17.0
       - run: zig build test
       - run: zig build app
+      - run: cd raycast && npm ci && npm test

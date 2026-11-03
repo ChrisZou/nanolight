@@ -28,14 +28,9 @@ pub const Status = enum {
 pub const Temp = struct {
     out: [128]u8 = undefined,
     out_len: usize = 0,
-    log: [128]u8 = undefined,
-    log_len: usize = 0,
 
     pub fn outPath(t: *const Temp) []const u8 {
         return t.out[0..t.out_len];
-    }
-    pub fn logPath(t: *const Temp) []const u8 {
-        return t.log[0..t.log_len];
     }
 };
 
@@ -45,15 +40,9 @@ var temp_seq: std.atomic.Value(u64) = .init(1);
 pub fn tempPaths(t: *Temp, seq: u64, pid: u32) void {
     const o = std.fmt.bufPrint(&t.out, "/tmp/nanolight-ai-{d}-{d}.txt", .{ pid, seq }) catch {
         t.out_len = 0;
-        t.log_len = 0;
         return;
     };
     t.out_len = o.len;
-    const l = std.fmt.bufPrint(&t.log, "/tmp/nanolight-ai-{d}-{d}.log", .{ pid, seq }) catch {
-        t.log_len = 0;
-        return;
-    };
-    t.log_len = l.len;
 }
 
 pub fn nextTemp(t: *Temp) void {
@@ -64,9 +53,18 @@ pub fn nextTemp(t: *Temp) void {
 pub const codex_candidates = [_][]const u8{
     "/opt/homebrew/bin/codex",
     "/usr/local/bin/codex",
+    "/Applications/Codex.app/Contents/Resources/codex",
+};
+/// Under $HOME: where npm, bun and pipx-style installs put it.
+pub const codex_home_candidates = [_][]const u8{
+    "/.local/bin/codex",
+    "/.npm-global/bin/codex",
+    "/.bun/bin/codex",
+    "/.volta/bin/codex",
 };
 
-pub fn findCodex(io: std.Io, buf: []u8) []const u8 {
+/// The first Codex CLI found, into `buf` ("" when none).
+pub fn findCodex(io: std.Io, buf: []u8, home: []const u8) []const u8 {
     for (codex_candidates) |c| {
         std.Io.Dir.accessAbsolute(io, c, .{}) catch continue;
         if (c.len <= buf.len) {
@@ -74,6 +72,11 @@ pub fn findCodex(io: std.Io, buf: []u8) []const u8 {
             return buf[0..c.len];
         }
     }
+    if (home.len > 0) for (codex_home_candidates) |suffix| {
+        const p = std.fmt.bufPrint(buf, "{s}{s}", .{ home, suffix }) catch continue;
+        std.Io.Dir.accessAbsolute(io, p, .{}) catch continue;
+        return p;
+    };
     return "";
 }
 
@@ -100,15 +103,17 @@ pub fn buildArgv(
     return argv.*[0..11];
 }
 
-/// Runs Codex; writes stderr to `log_path`; returns the last message into
-/// `answer_buf` (slice into that buffer). stdin is ignored by `process.run`.
+/// Seconds Codex gets before its whole process group is killed.
+pub const timeout_s = 120;
+
+/// Runs Codex and returns its last message, in `answer_buf`. Killed
+/// (with anything it started) after `timeout_s`, so one hung ask never
+/// blocks the next.
 pub fn run(
-    gpa: std.mem.Allocator,
     io: std.Io,
     codex: []const u8,
     question: []const u8,
     out_path: []const u8,
-    log_path: []const u8,
     answer_buf: []u8,
 ) ![]const u8 {
     if (codex.len == 0 or question.len == 0 or question.len > max_question) return error.BadQuestion;
@@ -120,32 +125,50 @@ pub fn run(
         f.close(io);
     }
 
-    const result = std.process.run(gpa, io, .{
+    // Its own process group, so the watchdog can take its children too.
+    var child = std.process.spawn(io, .{
         .argv = argv,
-        .stdout_limit = .limited(64 * 1024),
-        .stderr_limit = .limited(256 * 1024),
-        .create_no_window = true,
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+        .pgid = 0,
     }) catch return error.SpawnFailed;
-    defer gpa.free(result.stdout);
-    defer gpa.free(result.stderr);
-
-    if (log_path.len > 0) {
-        if (std.Io.Dir.createFileAbsolute(io, log_path, .{})) |f_val| {
-            var f = f_val;
-            defer f.close(io);
-            f.writeStreamingAll(io, result.stderr) catch {};
-        } else |_| {}
-    }
+    var watch: Watchdog = .{ .pid = child.id.?, .io = io };
+    const dog = std.Thread.spawn(.{}, Watchdog.run, .{&watch}) catch null;
+    const term = child.wait(io) catch null;
+    watch.done.store(true, .release);
+    if (dog) |t| t.join();
+    if (watch.fired.load(.acquire)) return error.TimedOut;
 
     const raw = std.Io.Dir.cwd().readFile(io, out_path, answer_buf) catch return error.NoAnswer;
     const trimmed = std.mem.trim(u8, raw, " \t\r\n");
     if (trimmed.len == 0) {
-        if (!result.term.success()) return error.CodexFailed;
-        return error.NoAnswer;
+        const ok = if (term) |t| t.success() else false;
+        return if (ok) error.NoAnswer else error.CodexFailed;
     }
     if (trimmed.ptr != answer_buf.ptr) std.mem.copyForwards(u8, answer_buf, trimmed);
     return answer_buf[0..trimmed.len];
 }
+
+/// Kills Codex's process group once `timeout_s` pass without it exiting.
+const Watchdog = struct {
+    pid: std.posix.pid_t,
+    io: std.Io,
+    done: std.atomic.Value(bool) = .init(false),
+    fired: std.atomic.Value(bool) = .init(false),
+
+    fn run(w: *Watchdog) void {
+        // Wakes every 250 ms, so a finished ask isn't held up joining it.
+        var waited_ms: i64 = 0;
+        while (waited_ms < timeout_s * 1000) : (waited_ms += 250) {
+            if (w.done.load(.acquire)) return;
+            w.io.sleep(.fromMilliseconds(250), .awake) catch return;
+        }
+        if (w.done.load(.acquire)) return;
+        w.fired.store(true, .release);
+        _ = std.c.kill(-w.pid, std.posix.SIG.KILL);
+    }
+};
 
 fn startsIgnoreCase(hay: []const u8, needle: []const u8) bool {
     if (hay.len < needle.len) return false;
@@ -168,7 +191,6 @@ test "temp paths are unique-shaped" {
     var tmp: Temp = .{};
     tempPaths(&tmp, 99, 123);
     try std.testing.expectEqualStrings("/tmp/nanolight-ai-123-99.txt", tmp.outPath());
-    try std.testing.expectEqualStrings("/tmp/nanolight-ai-123-99.log", tmp.logPath());
 }
 
 test "argv is a non-interactive exec" {

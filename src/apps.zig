@@ -1,6 +1,7 @@
-//! The apps Nanolight finds: every `.app` in the usual folders (and one
-//! folder down, for Utilities and suites), named without `.app`, sorted
-//! and without duplicates. How often each was opened is kept in the
+//! The apps Nanolight finds: on the Mac every `.app` in the usual folders
+//! (and one folder down, for Utilities and suites), named without `.app`;
+//! on Linux the desktop entries (apps_linux.zig), on Windows the Start
+//! menu's shortcuts (apps_win.zig). Sorted and without duplicates. How often each was opened is kept in the
 //! app's defaults and lifts it in the ranking. Icons are asked of the
 //! system only for the rows on screen, and kept.
 const std = @import("std");
@@ -24,7 +25,31 @@ pub const roots = [_][]const u8{
 };
 
 /// Shown with an empty query before anything was opened.
-const starters = [_][]const u8{ "Safari", "Notes", "Calendar", "System Settings", "Finder" };
+pub const default_starters: []const []const u8 = switch (builtin.os.tag) {
+    .macos => &.{ "Safari", "Notes", "Calendar", "System Settings", "Finder" },
+    .windows => &.{ "File Explorer", "Microsoft Edge", "Settings", "Notepad", "Calculator" },
+    else => &.{ "Files", "Firefox", "Terminal", "Settings", "Text Editor" },
+};
+
+/// Finds this machine's apps.
+pub fn scanSystem(ix: *Index, io: std.Io, env: *const std.process.Environ.Map) void {
+    switch (builtin.os.tag) {
+        .macos => return ix.scan(io, env.get("HOME")),
+        .windows => @import("apps_win.zig").scan(ix, io, env),
+        else => @import("apps_linux.zig").scan(ix, io),
+    }
+    ix.sort();
+}
+
+/// Opens an app found by `scanSystem` (or a file, a folder).
+pub fn launch(io: std.Io, path: []const u8) bool {
+    if (builtin.os.tag == .linux and std.mem.endsWith(u8, path, ".desktop")) return @import("apps_linux.zig").launch(io, path);
+    if (mac and std.mem.endsWith(u8, path, ".app")) {
+        openApp(path);
+        return true;
+    }
+    return nanoui.shell.openPath(path);
+}
 
 pub const Icon = struct { png: []u8 };
 
@@ -37,6 +62,8 @@ pub const Index = struct {
     /// Times each was opened.
     launches: std.ArrayList(u16) = .empty,
     icons: std.AutoHashMapUnmanaged(u32, ?Icon) = .empty,
+    /// Listed with an empty query before anything was opened.
+    starters: []const []const u8 = default_starters,
 
     pub fn init(gpa: std.mem.Allocator) Index {
         return .{ .gpa = gpa, .arena = .init(gpa) };
@@ -52,14 +79,18 @@ pub const Index = struct {
         ix.arena.deinit();
     }
 
-    /// Adds an app unless one of its name is there already.
+    /// Adds an app unless one of its name is there already, its folder
+    /// the one it is in.
     pub fn add(ix: *Index, name: []const u8, path: []const u8) !void {
+        return ix.addIn(name, path, std.fs.path.basename(std.fs.path.dirname(path) orelse ""));
+    }
+
+    /// Adds an app, its row saying `folder` ("Applications", "Start").
+    pub fn addIn(ix: *Index, name: []const u8, path: []const u8, folder: []const u8) !void {
         for (ix.names.items) |n| if (std.ascii.eqlIgnoreCase(n, name)) return;
         const a = ix.arena.allocator();
         const p = try a.dupe(u8, path);
-        const parent = std.fs.path.dirname(p) orelse "";
-        const folder = std.fs.path.basename(parent);
-        try ix.apps.append(ix.gpa, .{ .name = try a.dupe(u8, name), .path = p, .folder = folder });
+        try ix.apps.append(ix.gpa, .{ .name = try a.dupe(u8, name), .path = p, .folder = try a.dupe(u8, folder) });
         try ix.names.append(ix.gpa, ix.apps.items[ix.apps.items.len - 1].name);
         try ix.launches.append(ix.gpa, 0);
     }
@@ -95,7 +126,7 @@ pub const Index = struct {
     }
 
     /// Alphabetical, case-insensitive; names and counts kept in step.
-    fn sort(ix: *Index) void {
+    pub fn sort(ix: *Index) void {
         const Ctx = struct {
             pub fn lessThan(_: @This(), a: App, b: App) bool {
                 return std.ascii.lessThanIgnoreCase(a.name, b.name);
@@ -103,6 +134,16 @@ pub const Index = struct {
         };
         std.sort.pdq(App, ix.apps.items, Ctx{}, Ctx.lessThan);
         for (ix.apps.items, 0..) |a, i| ix.names.items[i] = a.name;
+    }
+
+    /// Whether `other` lists the same apps and commands, at the same
+    /// paths: a rescan that found nothing new (raycast_live.zig `refresh`).
+    pub fn same(ix: *const Index, other: *const Index) bool {
+        if (ix.apps.items.len != other.apps.items.len) return false;
+        for (ix.apps.items, other.apps.items) |a, b| {
+            if (!std.mem.eql(u8, a.path, b.path) or !std.mem.eql(u8, a.name, b.name)) return false;
+        }
+        return true;
     }
 
     pub fn find(ix: *const Index, name: []const u8) ?u32 {
@@ -128,7 +169,7 @@ pub const Index = struct {
             };
             best = next;
         }
-        for (starters) |s| {
+        for (ix.starters) |s| {
             if (n == out.len) break;
             const i = ix.find(s) orelse continue;
             if (std.mem.indexOfScalar(u32, out[0..n], i) == null) {
@@ -168,13 +209,31 @@ pub const Index = struct {
     /// The app's icon as PNG, made the first time it is asked for.
     pub fn icon(ix: *Index, i: u32) ?[]const u8 {
         if (ix.icons.get(i)) |cached| return if (cached) |c| c.png else null;
-        const png = if (mac) iconPng(ix.gpa, ix.apps.items[i].path) else null;
+        const path = ix.apps.items[i].path;
+        const png = if (std.mem.startsWith(u8, path, "raycast")) @import("raycast.zig").icon(ix.gpa, path) else switch (builtin.os.tag) {
+            .macos => iconPng(ix.gpa, path),
+            .windows => @import("apps_win.zig").icon(ix.gpa, path),
+            else => @import("apps_linux.zig").icon(ix.gpa, std.Io.Threaded.global_single_threaded.io(), path),
+        };
         ix.icons.put(ix.gpa, i, if (png) |p| .{ .png = p } else null) catch {};
         return png;
     }
 };
 
 const store_key = "nanolight.launches";
+
+/// Opens the Mac app at `path` without waiting for it: LaunchServices
+/// answers when the app has started, which can take seconds (an app
+/// reinstalled while Nanolight ran, issue #7), and `openURL:` waited on
+/// the main thread meanwhile, with the panel frozen in front.
+fn openApp(path: []const u8) void {
+    const pool = objc.Pool.push();
+    defer pool.pop();
+    const url = objc.msg(objc.Object, objc.class("NSURL"), "fileURLWithPath:", .{objc.nsString(path)});
+    const config = objc.msg(objc.Object, objc.class("NSWorkspaceOpenConfiguration"), "configuration", .{});
+    const ws = objc.msg(objc.Object, objc.class("NSWorkspace"), "sharedWorkspace", .{});
+    objc.msg(void, ws, "openApplicationAtURL:configuration:completionHandler:", .{ url, config, @as(?*anyopaque, null) });
+}
 
 /// The Finder's icon for `path`, drawn at 64 pixels and encoded as PNG.
 fn iconPng(gpa: std.mem.Allocator, path: []const u8) ?[]u8 {
@@ -198,6 +257,7 @@ test "names are kept once, sorted, and opening one suggests it" {
     const t = std.testing;
     var ix: Index = .init(t.allocator);
     defer ix.deinit();
+    ix.starters = &.{ "Safari", "Notes", "Calendar" };
     try ix.add("Safari", "/Applications/Safari.app");
     try ix.add("notes", "/System/Applications/Notes.app");
     try ix.add("Notes", "/Applications/Notes.app");
@@ -220,4 +280,27 @@ test "names are kept once, sorted, and opening one suggests it" {
     ix.launches.items[0] = 0;
     ix.load(mem.store());
     try t.expectEqual(@as(u16, 2), ix.launches.items[0]);
+}
+
+test "a second look tells an app installed since from no change (#15)" {
+    const t = std.testing;
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(t.io, "Applications/Alpha.app");
+    var buf: [128]u8 = undefined;
+    const home = try std.fmt.bufPrint(&buf, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    var ix: Index = .init(t.allocator);
+    defer ix.deinit();
+    ix.scan(t.io, home);
+    var again: Index = .init(t.allocator);
+    defer again.deinit();
+    again.scan(t.io, home);
+    try t.expect(ix.same(&again));
+    // DOSBox-X, installed while Nanolight ran.
+    try tmp.dir.createDirPath(t.io, "Applications/DOSBox-X.app");
+    var later: Index = .init(t.allocator);
+    defer later.deinit();
+    later.scan(t.io, home);
+    try t.expect(!ix.same(&later));
+    try t.expect(later.find("DOSBox-X") != null);
 }

@@ -12,39 +12,62 @@
 //! The walkthrough film, rendered offscreen: `tools/film.sh` (film.zig).
 const std = @import("std");
 const build_options = @import("build_options");
+const builtin = @import("builtin");
 const nanoui = @import("nanoui");
 const objc = nanoui.objc;
-const Index = @import("apps.zig").Index;
+const mac = builtin.os.tag == .macos;
+const apps = @import("apps.zig");
+const Index = apps.Index;
 const view = @import("view.zig");
 const Nanolight = view.Nanolight;
 const hotkey = @import("hotkey.zig");
 const shortcut = @import("shortcut.zig");
 const Onboard = @import("onboard.zig").Onboard;
 const suggest = @import("suggest.zig");
-const Preview = @import("preview.zig").Preview;
+/// The panel's window, the page in it and clicks through it: the Mac's own,
+/// or Windows' and Linux's (panel_pc.zig, pc_stubs.zig).
+const panel = if (mac) @import("panel_mac.zig") else @import("panel_pc.zig");
+const preview_mod = if (mac) @import("preview.zig") else @import("pc_stubs.zig");
+const Preview = preview_mod.Preview;
 const single = @import("single.zig");
-const ClickThrough = @import("clickthrough.zig").ClickThrough;
+const ClickThrough = if (mac) @import("clickthrough.zig").ClickThrough else @import("pc_stubs.zig").ClickThrough;
+const Recorder = if (mac) @import("recorder.zig").Recorder else @import("pc_stubs.zig").Recorder;
 const account = @import("account.zig");
+const rc = @import("raycast_live.zig");
 const Settings = @import("settings.zig").Settings;
 const LocalSettings = @import("settings.zig").Local;
 const clipboard = @import("clipboard.zig");
 const paste = @import("clipboard_paste.zig");
 const clip_panel = @import("clipboard_panel.zig");
+const PicLookup = @import("lookup.zig").Lookup(@import("pic.zig").List, @import("pic.zig").search);
+const FileLookup = @import("lookup.zig").Lookup(@import("file.zig").List, @import("file.zig").search);
 
 const suggest_key = "nanolight.suggest";
-/// The version an automatic update restarted into, for the new copy to say.
-const updated_key = "nanolight.updated";
-/// How long the panel must have been away before an update restarts it.
-const auto_update_after_ms = 10 * 1000;
+/// "1": Return opens searches in the browser (issue #10).
+const searches_out_key = "nanolight.searches_out";
+/// "0": no menu bar icon (issue #8).
+const menu_bar_key = "nanolight.menu_bar";
+
+pub fn applyChoice(ctx: *anyopaque, choice: shortcut.Choice) void {
+    Live.apply(ctx, choice);
+}
+
+pub fn recordKey(ctx: *anyopaque, on: bool) void {
+    Live.record(ctx, on);
+}
+
+pub fn loginItem(ctx: *anyopaque, set: ?bool) bool {
+    return Live.login(ctx, set);
+}
+/// The version 0.1.6 and before left when they restarted into an update
+/// themselves (nanoui's updater does it now, `autoRestart`).
+pub const updated_key = "nanolight.updated";
 /// When this Mac last changed its key or suggestions (settings.zig's `at`).
 const sync_at_key = "nanolight.sync.at";
 
-/// The window around the panel: shown and hidden. It is never resized: it
-/// is as tall as the panel can be, and clear below it; only the system
-/// glass behind the panel follows its height. (A window resized on every
-/// frame of the height's spring shook as it searched: AppKit's new frame
-/// and Metal's next drawable don't land together.)
-const Live = struct {
+/// The app around the panel: its window, shown and hidden (panel_mac.zig,
+/// panel_pc.zig), its key, its menu, its updates and its account.
+pub const Live = struct {
     app: *nanoui.App,
     s: *Nanolight,
     o: *Onboard,
@@ -52,11 +75,11 @@ const Live = struct {
     clipboard: *clipboard.Capture,
     choice: shortcut.Choice = .cmd_space,
     window: ?*nanoui.Window = null,
-    /// The system's glass under the panel, which the window's views keep.
-    glass: ?objc.Object = null,
     preview: Preview = .{},
     /// Clicks outside the panel go to what is under it (clickthrough.zig).
     through: ClickThrough = .{},
+    /// A key of one's own, being recorded in Settings (recorder.zig).
+    recorder: Recorder = .{},
     /// The words Google is to be asked about once typing pauses, and how
     /// many pauses are still being waited out (only the last one asks).
     asking: [suggest.max_len]u8 = undefined,
@@ -78,15 +101,31 @@ const Live = struct {
     clipboard_hotkey: bool = false,
     home: []const u8 = "",
     ai_job: ?*AiJob = null,
+    /// Picemon and FSearch, searched off the main thread (lookup.zig).
+    pic_lookup: ?PicLookup = null,
+    file_lookup: ?FileLookup = null,
+
+    /// Raycast extensions: the command running in the panel (raycast_live.zig).
+    ext_ui: @import("raycast_view.zig").Ext = undefined,
+    runner: @import("raycast.zig").Runner = undefined,
+    /// Raycast script commands, run by Nanolight itself (script_run.zig).
+    scripts: @import("script_run.zig").Runner = undefined,
+    env: ?*const std.process.Environ.Map = null,
+    /// The next `hide` is skipped: a command just took the panel.
+    keep_open: bool = false,
 
     fn host(l: *Live) view.Host {
-        return .{ .ctx = l, .open = open, .hide = hide, .resize = resize, .suggest = ask, .preview = showPage, .pic = picSearch, .file = fileSearch, .ai = aiAsk, .restart = restartSelf, .quit = quitSelf, .pm = pmSend };
+        const bind = @import("settings_bind.zig");
+        bind.box.ctx = l;
+        return .{ .ctx = l, .open = open, .hide = hide, .resize = resize, .suggest = ask, .preview = if (mac) showPage else null, .settings = &bind.box, .pic = picSearch, .file = fileSearch, .ai = aiAsk, .restart = restartSelf, .quit = quitSelf, .pm = pmSend };
     }
 
     fn open(ctx: *anyopaque, target: []const u8) void {
         const l: *Live = @ptrCast(@alignCast(ctx));
         if (std.mem.startsWith(u8, target, "https://") or std.mem.startsWith(u8, target, "http://")) {
             _ = nanoui.shell.openUrl(target);
+        } else if (rc.isCommand(target)) {
+            rc.start(l, target);
         } else if (single.isSelf(target)) {
             // Nanolight is already open: the panel comes back, empty,
             // rather than macOS starting a second copy.
@@ -97,7 +136,7 @@ const Live = struct {
                 }
             }.f);
         } else {
-            _ = nanoui.shell.openPath(target);
+            _ = apps.launch(l.app.io, target);
             // Its count went up: the other Macs suggest it too.
             if (l.acct) |*a| a.changed();
         }
@@ -114,10 +153,33 @@ const Live = struct {
         l.app.quit();
     }
 
+    /// Sends the note in the background (NSURLSession, a 10 s timeout):
+    /// the panel hides at once, a banner says how it went.
     fn pmSend(ctx: *anyopaque, body: []const u8) void {
         const l: *Live = @ptrCast(@alignCast(ctx));
-        const ok = @import("pm.zig").postWebhook(l.app.gpa, l.app.io, l.home, body);
-        if (!ok) std.log.warn("nanolight: pm webhook failed", .{});
+        const pm = @import("pm.zig");
+        var arena: std.heap.ArenaAllocator = .init(l.app.gpa);
+        defer arena.deinit();
+        const post = pm.prepare(arena.allocator(), l.app.io, l.home, body) orelse {
+            std.log.warn("nanolight: pm webhook not configured or note empty", .{});
+            return pm.notify(l.app.gpa, l.app.io, false);
+        };
+        // fetch copies the request: the arena can go when this returns.
+        nanoui.http.fetch(l.app.gpa, .{
+            .url = post.url,
+            .method = "POST",
+            .headers = &.{
+                .{ .name = "Authorization", .value = post.auth },
+                .{ .name = "Content-Type", .value = "application/json" },
+            },
+            .body = post.json,
+            .timeout = pm.timeout_s,
+        }, l, pmSent);
+    }
+
+    fn pmSent(l: *Live, r: nanoui.http.Response) void {
+        const ok = r.status >= 200 and r.status < 300;
+        if (!ok) std.log.warn("nanolight: pm webhook failed ({d} {s})", .{ r.status, r.err });
         @import("pm.zig").notify(l.app.gpa, l.app.io, ok);
     }
 
@@ -134,7 +196,8 @@ const Live = struct {
         for (ix.apps.items, ix.launches.items) |a, n| if (n > 0) list.append(arena, .{ .name = a.name, .count = n }) catch break;
         var at: i64 = 0;
         if (l.kv.get(arena, sync_at_key) catch null) |v| at = std.fmt.parseInt(i64, v, 10) catch 0;
-        return .{ .hotkey = @tagName(l.choice), .suggest = l.s.suggest_on, .at = at, .launches = list.items };
+        const name = arena.create([32]u8) catch return .{ .hotkey = "cmd_space", .suggest = l.s.suggest_on, .at = at, .launches = list.items };
+        return .{ .hotkey = l.choice.name(name), .suggest = l.s.suggest_on, .at = at, .launches = list.items };
     }
 
     /// The account's settings, merged: the key, the suggestions, the counts.
@@ -142,7 +205,7 @@ const Live = struct {
         const l: *Live = @ptrCast(@alignCast(ctx));
         var at: [24]u8 = undefined;
         l.kv.set(sync_at_key, std.fmt.bufPrint(&at, "{d}", .{st.at}) catch "0") catch {};
-        if (std.meta.stringToEnum(shortcut.Choice, st.hotkey)) |c| if (c != l.choice) {
+        if (shortcut.Choice.parse(st.hotkey)) |c| if (!c.eql(l.choice)) {
             shortcut.save(l.kv, c);
             l.useKey(c);
         };
@@ -184,19 +247,8 @@ const Live = struct {
         _ = nanoui.shell.openUrl(account.terms_url);
     }
 
-    /// The menu's account row: what signing in does, or who is synced.
     fn accountItems(l: *Live) [2]nanoui.menu.MenuItem {
-        const a = if (l.acct) |*x| x else return .{ .{ .label = "Sync Across Macs…", .disabled = true }, .separator };
-        const who: []const u8 = if (a.email().len > 0) a.email() else "your Codegraff account";
-        return switch (a.state) {
-            .signed_out => .{ .{ .label = "Sign In with Codegraff to Sync Across Macs…", .click = .of(l, Live.accountClick) }, .{ .label = "Codegraff Terms & Privacy", .click = .of(l, Live.openTerms) } },
-            .starting => .{ .{ .label = "Signing In…", .disabled = true }, .{ .label = "Codegraff Terms & Privacy", .click = .of(l, Live.openTerms) } },
-            .waiting => .{ .{ .label = "Approve in Your Browser… (Click to Cancel)", .click = .of(l, Live.accountClick) }, .{ .label = "Codegraff Terms & Privacy", .click = .of(l, Live.openTerms) } },
-            .signed_in => .{
-                .{ .label = std.fmt.bufPrint(&l.account_label, "Synced as {s}", .{who}) catch "Synced", .disabled = true },
-                .{ .label = "Sign Out of Codegraff", .click = .of(l, Live.accountClick) },
-            },
-        };
+        return @import("account_menu.zig").items(if (l.acct) |*x| x else null, &l.account_label, .of(l, Live.accountClick), .of(l, Live.openTerms));
     }
 
     /// Google is asked once typing pauses (`suggest.pause_ms`).
@@ -232,14 +284,26 @@ const Live = struct {
     }
 
 
-    fn picSearch(ctx: *anyopaque, query: []const u8, out: *@import("pic.zig").List) void {
+    fn picSearch(ctx: *anyopaque, query: []const u8) void {
         const l: *Live = @ptrCast(@alignCast(ctx));
-        @import("pic.zig").search(l.app.gpa, l.app.io, l.home, query, out);
+        if (l.pic_lookup) |*k| k.request(query);
     }
 
-    fn fileSearch(ctx: *anyopaque, query: []const u8, out: *@import("file.zig").List) void {
+    fn fileSearch(ctx: *anyopaque, query: []const u8) void {
         const l: *Live = @ptrCast(@alignCast(ctx));
-        @import("file.zig").search(l.app.gpa, l.app.io, l.home, query, out);
+        if (l.file_lookup) |*k| k.request(query);
+    }
+
+    fn picsFound(ctx: *anyopaque, needle: []const u8, hits: *const @import("pic.zig").List) void {
+        const l: *Live = @ptrCast(@alignCast(ctx));
+        l.s.picsArrived(needle, hits);
+        if (l.window) |w| w.redraw();
+    }
+
+    fn filesFound(ctx: *anyopaque, needle: []const u8, hits: *const @import("file.zig").List) void {
+        const l: *Live = @ptrCast(@alignCast(ctx));
+        l.s.filesArrived(needle, hits);
+        if (l.window) |w| w.redraw();
     }
 
     fn aiAsk(ctx: *anyopaque, question: []const u8) void {
@@ -271,7 +335,7 @@ const Live = struct {
     }
 
     /// Escape or ⌘↩ while the page has the keys.
-    fn pageKey(ctx: *anyopaque, key: @import("preview.zig").Key) void {
+    fn pageKey(ctx: *anyopaque, key: preview_mod.Key) void {
         const l: *Live = @ptrCast(@alignCast(ctx));
         switch (key) {
             .escape => l.s.back(),
@@ -284,7 +348,7 @@ const Live = struct {
         if (l.window) |w| w.redraw();
     }
 
-    fn toggleSuggest(l: *Live, item: *nanoui.menu.Item) void {
+    pub fn toggleSuggest(l: *Live, item: *nanoui.menu.Item) void {
         l.s.suggest_on = item.checked;
         l.kv.set(suggest_key, if (item.checked) "1" else "0") catch {};
         l.touched();
@@ -409,13 +473,35 @@ const Live = struct {
         }.f);
     }
 
+    pub fn setSearchesOut(l: *Live, on: bool) void {
+        l.s.searches_out = on;
+        l.kv.set(searches_out_key, if (on) "1" else "0") catch {};
+    }
+
+    /// Whether the menu bar icon shows; `set` shows or hides it. Hidden,
+    /// Nanolight is its key alone: Settings stays in the panel (⌘,), and
+    /// opening the app again shows the panel. The status item stays, only
+    /// unseen (nanoui's App keeps its trays until it quits).
+    pub fn menuBar(l: *Live, set: ?bool) bool {
+        if (comptime !mac) return false;
+        const t = l.tray orelse return false;
+        if (set) |on| {
+            l.kv.set(menu_bar_key, if (on) "1" else "0") catch {};
+            objc.msg(void, t.item, "setVisible:", .{if (on) objc.YES else objc.NO});
+        }
+        return objc.msg(objc.BOOL, t.item, "isVisible", .{});
+    }
+
     /// The menu bar icon's menu, with the update waiting, if one is.
     fn menu(l: *Live) void {
+        // No tray icon in nanoui on Windows and Linux yet: Settings has it all.
+        if (comptime !mac) return;
         const t = l.tray orelse return;
         const ready = if (l.updater) |u| u.ready() else null;
         const label = if (ready) |v| std.fmt.bufPrint(&l.update_label, "Restart to Update to {s}", .{v}) catch "Restart to Update" else "Check for Updates";
         const acc = l.accountItems();
         t.setMenu("Nanolight", &.{
+            .{ .label = "Settings…", .accelerator = "Cmd+,", .click = .of(l, Live.menuSettings) },
             .{ .label = "Open Nanolight", .click = .of(l, Live.menuShow) },
             .{ .label = "Welcome…", .click = .of(l, Live.welcome) },
             .{ .label = "Google Suggestions", .kind = .checkbox, .checked = l.s.suggest_on, .click = .of(l, Live.toggleSuggest) },
@@ -441,71 +527,46 @@ const Live = struct {
     fn updated(ctx: *anyopaque) void {
         const l: *Live = @ptrCast(@alignCast(ctx));
         menu(l);
-        l.autoUpdate();
-    }
-
-    /// A newer version is downloaded and checked: Nanolight restarts into it
-    /// on its own once the panel has been away a while. (A menu bar app
-    /// almost never quits, so installing at quit, as nanoui's updater
-    /// otherwise does, would mean never.) Called as one is ready and each
-    /// time the panel goes away.
-    fn autoUpdate(l: *Live) void {
-        const u = l.updater orelse return;
-        if (u.ready() == null) return;
-        nanoui.App.after(auto_update_after_ms, l, struct {
-            fn f(c: ?*anyopaque) callconv(.c) void {
-                const live: *Live = @ptrCast(@alignCast(c.?));
-                live.restartIfAway();
-            }
-        }.f);
-    }
-
-    fn restartIfAway(l: *Live) void {
-        const u = l.updater orelse return;
-        const v = u.ready() orelse return;
-        // In use: the next time it goes away (`keyChanged`) asks again.
-        if (l.window) |w| if (w.isVisible()) return;
-        // The new copy starts quietly and says it was updated (main).
-        l.kv.set(updated_key, v) catch {};
-        if (u.restart()) l.app.quit() else l.kv.remove(updated_key);
+        if (!mac) @import("update_pc.zig").away(l);
     }
 
     /// The panel became, or stopped being, the key window (it hides as it
-    /// stops): an update waiting may go in, and an "Updated" note is done.
+    /// stops): an "Updated" note is done. (An update waiting goes in once
+    /// the panel has been away a while: nanoui's `autoRestart`.)
     fn keyChanged(ctx: *anyopaque, w: *nanoui.Window) void {
         const l: *Live = @ptrCast(@alignCast(ctx));
         if (w.isFocused()) return;
+        if (l.recorder.active()) record(l, false);
         l.through.stop();
         l.s.note = "";
-        l.autoUpdate();
+        // The Mac's popover hides itself; elsewhere the panel goes as
+        // another window takes the keys.
+        if (!mac and w.isVisible()) w.hide();
+        if (!mac) @import("update_pc.zig").away(l);
     }
 
     fn hide(ctx: *anyopaque) void {
         const l: *Live = @ptrCast(@alignCast(ctx));
+        if (l.keep_open) {
+            l.keep_open = false;
+            return;
+        }
         if (l.window) |w| w.hide();
     }
 
-    /// The glass to the panel's height, in the frame that draws it (a
-    /// view's frame, not the window's: nothing is laid out again).
+    /// The window (or the Mac's glass under the panel) to its height.
     fn resize(ctx: *anyopaque, h: f32) void {
         const l: *Live = @ptrCast(@alignCast(ctx));
         l.preview.fit(h);
         // The panel grew or shrank under a still pointer.
         l.through.update();
-        const g = l.glass orelse return;
-        // Disable AppKit implicit layer animations: setFrame on the vibrancy
-        // view otherwise fights the next spring tick and strobes.
-        const tx = objc.class("CATransaction");
-        objc.msg(void, tx, "begin", .{});
-        objc.msg(void, tx, "setDisableActions:", .{objc.YES});
-        objc.msg(void, g, "setFrame:", .{glassFrame(h)});
-        objc.msg(void, tx, "commit", .{});
+        if (l.window) |w| panel.resize(w, h);
     }
 
     fn toggle(ctx: *anyopaque) void {
         const l: *Live = @ptrCast(@alignCast(ctx));
         const w = l.window orelse return;
-        const showing = w.isVisible() and w.isFocused();
+        const showing = w.isVisible() and panel.focused(w);
         l.o.pressed(showing);
         if (showing and !l.s.clip_mode) return w.hide();
         l.s.clip_mode = false;
@@ -526,15 +587,8 @@ const Live = struct {
         l.paste_target.remember();
         // Freed a key in System Settings, quit a launcher: look again.
         if (l.o.active) l.o.refresh();
-        // A fifth of the way down the main screen, centered.
-        const screen = objc.msg(?objc.Object, objc.class("NSScreen"), "mainScreen", .{}) orelse return;
-        const f = objc.msg(objc.CGRect, screen, "frame", .{});
-        const screens = objc.msg(objc.Object, objc.class("NSScreen"), "screens", .{});
-        const primary = objc.msg(objc.Object, screens, "objectAtIndex:", .{@as(objc.NSUInteger, 0)});
-        const ph = objc.msg(objc.CGRect, primary, "frame", .{}).size.height;
-        const top = ph - (f.origin.y + f.size.height);
-        // The panel there; the window is the shadow's margin bigger.
-        w.setPosition(f.origin.x + (f.size.width - view.width) / 2 - view.shadow_margin, top + f.size.height * 0.2 - view.shadow_margin);
+        panel.place(w);
+        rc.refresh(l);
         l.s.reveal();
         if (l.s.clip_mode) {
             l.s.clip.query.focus();
@@ -549,6 +603,7 @@ const Live = struct {
         Live.resize(l, h);
         l.s.last_h = h;
         w.show();
+        panel.shown(w);
         l.through.start();
         if (l.acct) |*a| a.maybePull();
         w.redraw();
@@ -560,11 +615,31 @@ const Live = struct {
 
     fn useKey(l: *Live, choice: shortcut.Choice) void {
         l.choice = choice;
-        hotkey.register(hotkey.space, choice.carbon(), .{ .ctx = l, .func = toggle }) catch |e|
-            std.log.warn("nanolight: {s} can't be registered ({s}); open it from the menu bar", .{ choice.label(), @errorName(e) });
+        hotkey.register(choice, .{ .ctx = l, .func = toggle }) catch |e|
+            std.log.warn("nanolight: {f} can't be registered ({s}); open it from the menu bar", .{ choice, @errorName(e) });
     }
 
-    fn apply(ctx: *anyopaque, choice: shortcut.Choice) void {
+    /// Settings records a key: until it has one, keys pressed go to it,
+    /// and the current key is let go (pressed, it is recorded too).
+    pub fn record(ctx: *anyopaque, on: bool) void {
+        const l: *Live = @ptrCast(@alignCast(ctx));
+        if (on) {
+            hotkey.unregister();
+            l.recorder.start(.{ .ctx = l, .func = recorded });
+            return;
+        }
+        l.recorder.stop();
+        l.s.settings_ui.recording = false;
+        l.useKey(l.choice);
+    }
+
+    fn recorded(ctx: *anyopaque, r: shortcut.Recorded) void {
+        const l: *Live = @ptrCast(@alignCast(ctx));
+        l.s.settings_ui.took(l.s, r);
+        if (l.window) |w| w.redraw();
+    }
+
+    pub fn apply(ctx: *anyopaque, choice: shortcut.Choice) void {
         const l: *Live = @ptrCast(@alignCast(ctx));
         shortcut.save(l.kv, choice);
         l.useKey(choice);
@@ -586,13 +661,18 @@ const Live = struct {
         }.f);
     }
 
-    /// Open at login: the system's login items (SMAppService, macOS 13 and
-    /// later), which need the app to run from its bundle.
-    fn login(_: *anyopaque, set: ?bool) bool {
-        const cls = objc_getClass("SMAppService") orelse return false;
-        const svc = objc.msg(objc.Object, cls, "mainAppService", .{});
-        if (set) |on| _ = objc.msg(objc.BOOL, svc, if (on) "registerAndReturnError:" else "unregisterAndReturnError:", .{@as(?*anyopaque, null)});
-        return objc.msg(objc.NSInteger, svc, "status", .{}) == 1; // enabled
+    /// Open at login (login.zig).
+    pub fn login(_: *anyopaque, set: ?bool) bool {
+        return @import("login.zig").login(set);
+    }
+
+    /// `nanolight --toggle`, or a newer copy starting (single.zig).
+    fn command(ctx: *anyopaque, cmd: single.Command) void {
+        const l: *Live = @ptrCast(@alignCast(ctx));
+        switch (cmd) {
+            .toggle => toggle(l),
+            .quit => l.app.quit(),
+        }
     }
 
     fn done(ctx: *anyopaque) void {
@@ -604,6 +684,20 @@ const Live = struct {
         l.o.start(l.choice);
         if (l.window) |w| if (w.isVisible()) w.hide();
         l.menuShow(item);
+    }
+
+    /// The menu opens the panel straight into Settings.
+    fn menuSettings(l: *Live, _: *nanoui.menu.Item) void {
+        nanoui.App.after(50, l, struct {
+            fn f(ctx: ?*anyopaque) callconv(.c) void {
+                const live: *Live = @ptrCast(@alignCast(ctx.?));
+                const w = live.window orelse return;
+                if (!(w.isVisible() and w.isFocused())) toggle(live);
+                live.o.active = false;
+                live.s.openSettings();
+                w.redraw();
+            }
+        }.f);
     }
 
     fn menuShow(l: *Live, _: *nanoui.menu.Item) void {
@@ -631,13 +725,12 @@ const AiJob = struct {
 
 fn aiWorker(job: *AiJob) void {
     const ai = @import("ai.zig");
-    var codex_buf: [128]u8 = undefined;
-    const codex = ai.findCodex(job.live.app.io, &codex_buf);
+    var codex_buf: [512]u8 = undefined;
+    const codex = ai.findCodex(job.live.app.io, &codex_buf, job.live.home);
     var temp: ai.Temp = .{};
     ai.nextTemp(&temp);
     defer {
         std.Io.Dir.deleteFileAbsolute(job.live.app.io, temp.outPath()) catch {};
-        std.Io.Dir.deleteFileAbsolute(job.live.app.io, temp.logPath()) catch {};
     }
     if (codex.len == 0) {
         const msg = "Codex not found";
@@ -647,13 +740,14 @@ fn aiWorker(job: *AiJob) void {
         job.done.store(true, .release);
         return;
     }
-    const text_ans = ai.run(job.live.app.gpa, job.live.app.io, codex, job.question[0..job.qlen], temp.outPath(), temp.logPath(), &job.answer) catch |e| {
+    const text_ans = ai.run(job.live.app.io, codex, job.question[0..job.qlen], temp.outPath(), &job.answer) catch |e| {
         const msg: []const u8 = switch (e) {
             error.BadQuestion => "Empty question",
             error.TempFile => "Couldn't create temp file",
             error.SpawnFailed => "Couldn't run Codex",
             error.NoAnswer => "No answer",
             error.CodexFailed => "Codex failed",
+            error.TimedOut => "Codex took too long",
         };
         @memcpy(job.answer[0..msg.len], msg);
         job.alen = msg.len;
@@ -699,53 +793,40 @@ const Ask = struct {
     }
 };
 
-extern "c" fn objc_getClass(name: [*:0]const u8) ?objc.Class;
-
-/// Puts the system's vibrancy under the panel (NSVisualEffectView, as
-/// launchers use), `height` tall, the shadow's margin in. Returns it, for
-/// `Live.resize`. Not NSGlassEffectView: on macOS 27 it draws an opaque
-/// 1-pixel black line just outside its sides, which read as black edges
-/// round the panel.
-fn backdrop(w: *nanoui.Window, radius: f64, height: f32) ?objc.Object {
-    const surface = w.surface orelse return null;
-    const pool = objc.Pool.push();
-    defer pool.pop();
-    const b = objc.msg(objc.CGRect, surface.nsview, "bounds", .{});
-    const v = objc.msg(objc.Object, objc.alloc("NSVisualEffectView"), "initWithFrame:", .{b});
-    // Popover: light or dark with the system, as the panel's colors are.
-    objc.msg(void, v, "setMaterial:", .{@as(objc.NSInteger, 6)});
-    objc.msg(void, v, "setBlendingMode:", .{@as(objc.NSInteger, 0)}); // behind the window
-    objc.msg(void, v, "setState:", .{@as(objc.NSInteger, 1)}); // always active
-    // Rounded as the panel is.
-    objc.msg(void, v, "setWantsLayer:", .{objc.YES});
-    if (objc.msg(?objc.Object, v, "layer", .{})) |layer| {
-        objc.msg(void, layer, "setCornerRadius:", .{radius});
-        objc.msg(void, layer, "setMasksToBounds:", .{objc.YES});
-    }
-    surface.attachBackdrop(v);
-    objc.release(v);
-    // In a flipped host view, from the top; the window never resizes.
-    objc.msg(void, v, "setAutoresizingMask:", .{@as(objc.NSUInteger, 0)});
-    const tx = objc.class("CATransaction");
-    objc.msg(void, tx, "begin", .{});
-    objc.msg(void, tx, "setDisableActions:", .{objc.YES});
-    objc.msg(void, v, "setFrame:", .{glassFrame(height)});
-    objc.msg(void, tx, "commit", .{});
-    return v;
-}
-
-/// Where the glass goes: under the panel, the shadow's margin in.
-fn glassFrame(h: f32) objc.CGRect {
-    const m = view.shadow_margin;
-    return .{ .origin = .{ .x = m, .y = m }, .size = .{ .width = view.width, .height = h } };
-}
+/// This platform's archive in each release (macos/package.sh, pc/package.sh).
+const asset = switch (builtin.os.tag) {
+    .macos => "nanolight-macos-arm64.zip",
+    .windows => "nanolight-windows-x86_64.zip",
+    else => "nanolight-linux-" ++ @tagName(builtin.cpu.arch) ++ ".tar.gz",
+};
+const version = @import("build_options").version;
+extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 
 pub fn main(init: std.process.Init) !void {
+    // `nanolight --toggle`: the running copy's panel (Wayland's shortcut);
+    // `--version`: what the updater asks a downloaded copy.
+    var arena: std.heap.ArenaAllocator = .init(init.gpa);
+    defer arena.deinit();
+    for (try init.minimal.args.toSlice(arena.allocator())) |arg| {
+        if (std.mem.eql(u8, arg, "--version")) {
+            var out: [64]u8 = undefined;
+            var w = std.Io.File.stdout().writer(init.io, &out);
+            try w.interface.print("nanolight {s}\n", .{version});
+            return w.interface.flush();
+        }
+        if (std.mem.eql(u8, arg, "--toggle")) {
+            if (single.send(.toggle)) return;
+            break;
+        }
+    }
+    // Linux: GTK 3, where a window can be put somewhere (GTK 4 lets only
+    // the compositor place one), unless the user asked for another.
+    if (builtin.os.tag == .linux and std.c.getenv("NANOUI_GTK") == null) _ = setenv("NANOUI_GTK", "3", 0);
     const app = try nanoui.App.create(init, .{ .name = "Nanolight", .quit_on_last_window_closed = false });
     defer app.destroy();
     var index: Index = .init(init.gpa);
     defer index.deinit();
-    index.scan(init.io, init.environ_map.get("HOME"));
+    apps.scanSystem(&index, init.io, init.environ_map);
     const kv = nanoui.kv.standard();
     index.load(kv);
     var o: Onboard = .{};
@@ -764,35 +845,39 @@ pub fn main(init: std.process.Init) !void {
             l.clipboardChanged();
         }
     }.f };
+    live.pic_lookup = .{ .gpa = init.gpa, .io = init.io, .home = live.home, .done = .{ .ctx = &live, .func = Live.picsFound } };
+    live.file_lookup = .{ .gpa = init.gpa, .io = init.io, .home = live.home, .done = .{ .ctx = &live, .func = Live.filesFound } };
     s.host = live.host();
-    // Google's completions are on unless turned off from the menu bar.
+    // Google's completions are on unless turned off in Settings.
     if (kv.get(init.gpa, suggest_key) catch null) |v| {
         defer init.gpa.free(v);
         s.suggest_on = !std.mem.eql(u8, v, "0");
     }
+    if (kv.get(init.gpa, searches_out_key) catch null) |v| {
+        defer init.gpa.free(v);
+        s.searches_out = std.mem.eql(u8, v, "1");
+    }
     s.reveal();
     // The rows first, so a snapshot is as tall as the panel.
     s.rebuild();
-    live.window = try app.newWindow(.{
+    var options: nanoui.WindowOptions = .{
         .title = "Nanolight",
-        .width = if (app.flags.hidden) view.width else view.width + 2 * view.shadow_margin,
-        .height = if (app.flags.hidden) s.height() else view.max_height + 2 * view.shadow_margin,
         .resizable = false,
-        .title_bar = .popover,
         .visible = false,
         .on_key = .{ .ctx = &live, .func = Live.keyChanged },
         .content = .{ .view = .init(&s, Nanolight.view) },
-    });
+    };
+    panel.adjust(&options, app.flags.hidden, s.height());
+    live.window = try app.newWindow(options);
     if (app.flags.hidden) return app.run();
-    // The newest launch is the one that stays (single.zig).
-    if (single.quitOthers() > 0) std.log.info("nanolight: asked an older copy to quit", .{});
-    // A menu bar app: no Dock icon, no menu bar of its own.
-    _ = objc.msg(objc.BOOL, app.nsapp, "setActivationPolicy:", .{@as(objc.NSInteger, 1)});
-    // The panel's own shadow, not the system's: a shadowed window in dark
-    // mode gets a hard black outline round its pixels.
-    s.margin = view.shadow_margin;
-    objc.msg(void, live.window.?.nswindow, "setHasShadow:", .{objc.NO});
-    live.glass = backdrop(live.window.?, 18, if (o.active) o.height() else s.height());
+    // Raycast extensions' commands among the apps (never in headless runs:
+    // they're this machine's).
+    rc.init(&live, init.environ_map);
+    defer rc.deinit(&live);
+    rc.rescan(&live);
+    // The newest launch is the one that stays; it hears `--toggle` (single.zig).
+    if (single.claim(.{ .ctx = &live, .func = Live.command }) > 0) std.log.info("nanolight: asked an older copy to quit", .{});
+    panel.setup(app, live.window.?, &s, if (o.active) o.height() else s.height());
     live.useKey(live.choice);
     live.clipboard_hotkey = registered: {
         hotkey.registerClipboard(.{ .ctx = &live, .func = Live.showClipboard }) catch |e| {
@@ -806,18 +891,29 @@ pub fn main(init: std.process.Init) !void {
     o.hooks = live.hooks();
     // The first run: the welcome, in the panel.
     if (!shortcut.onboarded(kv)) o.start(live.choice);
-    live.tray = try app.newTray(.{ .symbol = "magnifyingglass", .tooltip = "Nanolight" });
-    // A release build (macos/package.sh) checks its GitHub releases; one
-    // run from zig-out can't replace itself, and leaves the item off.
+    if (mac) live.tray = try app.newTray(.{ .symbol = "magnifyingglass", .tooltip = "Nanolight" });
+    // The menu bar icon, unless Settings took it away.
+    if (kv.get(init.gpa, menu_bar_key) catch null) |v| {
+        defer init.gpa.free(v);
+        if (std.mem.eql(u8, v, "0")) _ = live.menuBar(false);
+    }
+    // A release build checks its GitHub releases; one run from zig-out
+    // can't replace itself, and leaves the item off.
     const updater = nanoui.Updater.start(init, .{
-        .repo = "justrach/nanolight",
-        .asset = "nanolight-macos-arm64.zip",
+        // This fork's releases: upstream's would replace it without its features.
+        .repo = "ChrisZou/nanolight",
+        .asset = asset,
+        .version = version,
         .name = "Nanolight",
         .changed = .{ .ctx = &live, .func = Live.updated },
     }) catch null;
     defer if (updater) |u| u.deinit();
     if (updater) |u| if (u.phase.load(.acquire) != .off) {
         live.updater = u;
+        // A launcher almost never quits, so installing at quit would mean
+        // never: it restarts into an update once the panel has been away
+        // 10 s, unseen, and comes back as it was (update_pc.zig off the Mac).
+        u.autoRestart(app, .{ .idle_ms = 10 * 1000 });
     };
     // Signed in before: synced now. Signing in is from the menu.
     live.acct = .{ .gpa = init.gpa, .kv = kv, .hooks = live.accountHooks() };
@@ -829,10 +925,13 @@ pub fn main(init: std.process.Init) !void {
     // Restarted by an automatic update: quietly, the panel saying so the
     // next time it opens. Otherwise launching shows the panel.
     var note_buf: [64]u8 = undefined;
-    if (kv.get(init.gpa, updated_key) catch null) |v| {
-        defer init.gpa.free(v);
-        kv.remove(updated_key);
-        s.note = std.fmt.bufPrint(&note_buf, "Updated to {s} ({d})", .{ v, build_options.build }) catch "Updated";
+    const old = kv.get(init.gpa, updated_key) catch null;
+    defer if (old) |v| init.gpa.free(v);
+    if (old != null) kv.remove(updated_key);
+    const restarted = if (live.updater) |u| u.updatedFrom() != null else false;
+    if (restarted or old != null) {
+        const now = if (live.updater) |u| u.current else old.?;
+        s.note = std.fmt.bufPrint(&note_buf, "Updated to {s} ({d})", .{ now, build_options.build }) catch "Updated";
     } else Live.toggle(&live);
     try app.run();
 }

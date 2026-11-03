@@ -1,8 +1,7 @@
 //! The launcher panel: the query, then what it finds in sections, then a
-//! footer naming what Return does. Neutral glass with a hairline rim,
-//! 40-point rows, the selection a grey step that slides between them,
-//! matched letters drawn stronger. Nothing moves while nothing happens:
-//! frames come from keys, and from the height and selection settling.
+//! footer naming what Return does. Neutral glass, a hairline rim, 40-point
+//! rows, the selection a grey step that slides between them. Nothing moves
+//! while nothing happens: frames come from keys, and from height settling.
 const std = @import("std");
 const build_options = @import("build_options");
 const nanoui = @import("nanoui");
@@ -11,6 +10,8 @@ const motion = ui.motion;
 const Index = @import("apps.zig").Index;
 const results = @import("results.zig");
 const suggest = @import("suggest.zig");
+const settings_view = @import("settings_view.zig");
+const SettingsHost = @import("settings_host.zig").SettingsHost;
 const Row = results.Row;
 
 /// What the panel asks of whatever shows it (the window, or the film).
@@ -27,10 +28,12 @@ pub const Host = struct {
     /// Shows a search's page in the panel, over `webArea`; null takes it
     /// away. Without it, searches open in the browser.
     preview: ?*const fn (ctx: *anyopaque, url: ?[]const u8) void = null,
-    /// Picemon keyword search into `out` (from `img ` / `pic `).
-    pic: ?*const fn (ctx: *anyopaque, query: []const u8, out: *@import("pic.zig").List) void = null,
-    /// FSearch file search into `out` (from `f ` / `find ` / `file `).
-    file: ?*const fn (ctx: *anyopaque, query: []const u8, out: *@import("file.zig").List) void = null,
+    /// Starts a Picemon search (`img ` / `pic `), off the main thread; the
+    /// hits arrive in `Nanolight.picsArrived`.
+    pic: ?*const fn (ctx: *anyopaque, query: []const u8) void = null,
+    /// Starts an FSearch file search (`f ` / `find ` / `file `); the hits
+    /// arrive in `Nanolight.filesArrived`.
+    file: ?*const fn (ctx: *anyopaque, query: []const u8) void = null,
     /// Start a Codex one-shot; the answer lands in `Nanolight.aiDone`.
     ai: ?*const fn (ctx: *anyopaque, question: []const u8) void = null,
     /// Relaunch this bundle then quit (`reload` / `restart`).
@@ -39,6 +42,9 @@ pub const Host = struct {
     quit: ?*const fn (ctx: *anyopaque) void = null,
     /// POST a PM note to the 项目经理 webhook (`pm ` / `PM `).
     pm: ?*const fn (ctx: *anyopaque, body: []const u8) void = null,
+    /// Settings (the shortcut, login, sync, updates). Without it the
+    /// screen still draws, and changes nothing the app keeps.
+    settings: ?*const SettingsHost = null,
 };
 
 pub const width: f32 = 680;
@@ -50,18 +56,22 @@ pub const icon_png = @embedFile("icon-256.png");
 pub fn appIcon(c: *ui.Context, size: f32) void {
     _ = ui.image(c, .{ .key = "nanolight-icon", .bytes = icon_png, .max_width = size, .max_height = size, .radius = 0, .scale = 2 });
 }
-const header_h = 58;
+pub const header_h = 58;
 const row_h = 40;
 const calc_h = 92;
 const ai_h = 120;
 const section_h = 28;
-const footer_h = 38;
+pub const footer_h = 38;
 const list_pad = 6;
 /// The room a window leaves round the panel for its shadow (`Nanolight.margin`).
 pub const shadow_margin: f32 = 40;
 /// The tallest the panel gets: every app row and Ask Codex (or a pic/file
-/// list), under two section heads, or a search's page. The window is this tall.
-pub const max_height: f32 = header_h + footer_h + 2 + list_pad * 2 + results.max_rows * row_h + 2 * section_h;
+/// list), under two section heads, a search's page, or Settings (taller
+/// than this fork's eight rows). The window is this tall.
+pub const max_height: f32 = @max(
+    header_h + footer_h + 2 + list_pad * 2 + results.max_rows * row_h + 2 * section_h,
+    @import("settings_view.zig").height,
+);
 
 /// Where a search's page goes in a panel `h` tall: from `y` down from its
 /// top, `h` tall, between the header and the footer, the panel's width.
@@ -72,27 +82,8 @@ pub fn webArea(h: f32) struct { y: f32, h: f32 } {
 pub const spring: motion.Spring = .{ .stiffness = 320, .damping = 32 };
 const slide: motion.Spring = .{ .stiffness = 700, .damping = 52 };
 
-pub const Palette = struct { text: ui.Color, sub: ui.Color, hair: ui.Color, sel: ui.Color, rim: ui.Color, tile: ui.Color, fill: ui.Color };
-
-pub fn palette(dark: bool) Palette {
-    return if (dark) .{
-        .text = .hex(0xeeeeee),
-        .sub = .hex(0xb5b5b5),
-        .hair = ui.Color.white.alpha(0.12),
-        .sel = ui.Color.white.alpha(0.16),
-        .rim = ui.Color.white.alpha(0.1),
-        .tile = ui.Color.white.alpha(0.09),
-        .fill = ui.Color.hex(0x1a1a1a).alpha(0.5),
-    } else .{
-        .text = .hex(0x292929),
-        .sub = .hex(0x6f6f6f),
-        .hair = ui.Color.black.alpha(0.09),
-        .sel = ui.Color.black.alpha(0.08),
-        .rim = ui.Color.black.alpha(0.05),
-        .tile = ui.Color.black.alpha(0.05),
-        .fill = ui.Color.white.alpha(0.45),
-    };
-}
+pub const Palette = @import("palette.zig").Palette;
+pub const palette = @import("palette.zig").palette;
 
 pub const Nanolight = struct {
     index: *Index,
@@ -112,6 +103,12 @@ pub const Nanolight = struct {
     own_glass: bool = false,
     /// Clear room round the panel in its window, for its shadow.
     margin: f32 = 0,
+    /// The window fades in as it shows, the system's glass with it
+    /// (panel_mac.zig): the panel has no entrance of its own (issue #9).
+    window_fades: bool = false,
+    /// Return sends a Google search to the browser and ⌘↩ shows it in
+    /// the panel, the other way round from the default (issue #10).
+    searches_out: bool = false,
     /// Each showing gets a new one: the panel comes in again.
     shown: u32 = 0,
     copied_at: f64 = -10,
@@ -123,10 +120,9 @@ pub const Nanolight = struct {
     revealed: u64 = 0,
     /// Said in the footer in place of the name ("Updated to 0.1.3"), if set.
     note: []const u8 = "",
-    /// The first-run welcome, drawn in the panel while it is active.
+    /// The first-run welcome, drawn while it is active.
     onboard: ?*@import("onboard.zig").Onboard = null,
-    /// Google's completions: whether to ask for them, those listed, and
-    /// the answers so far.
+    /// Google's completions: whether to ask, those listed, the answers.
     suggest_on: bool = true,
     web: suggest.List = .{},
     cache: suggest.Cache = .{},
@@ -139,6 +135,10 @@ pub const Nanolight = struct {
     pics: @import("pic.zig").List = .{},
     /// FSearch hits for the current `f `/`find `/`file ` query.
     files: @import("file.zig").List = .{},
+    /// The words last searched for (their hash): a search runs once per
+    /// change, and only its own words' hits are taken.
+    pics_asked: u64 = 0,
+    files_asked: u64 = 0,
     /// Codex Q&A (plain query default, or `ai `/`ask `).
     ai_status: @import("ai.zig").Status = .ready,
     ai_question: [@import("ai.zig").max_question]u8 = undefined,
@@ -150,10 +150,14 @@ pub const Nanolight = struct {
     /// Body for the current `pm ` / `PM ` row.
     pm_body: [@import("pm.zig").max_body]u8 = undefined,
     pm_body_len: usize = 0,
+    /// Settings, drawn in the panel in place of the rows.
+    settings_ui: settings_view.Settings = .{},
+    ext: ?*@import("raycast_view.zig").Ext = null,
 
     /// Called as it is shown: the query selected, the keys its own.
     pub fn reveal(s: *Nanolight) void {
         s.back();
+        s.settings_ui.hide();
         s.shown +%= 1;
         // Suggestions follow what was opened since.
         s.built = 1;
@@ -165,6 +169,8 @@ pub const Nanolight = struct {
     /// The panel's height for the rows it lists.
     pub fn height(s: *const Nanolight) f32 {
         if (s.clip_mode) return s.clip.height();
+        if (s.settings_ui.open) return settings_view.height;
+        if (s.ext) |e| if (e.open) return e.height();
         if (s.previewing) return max_height;
         var h: f32 = header_h + footer_h + 1;
         if (s.res.n == 0) return h;
@@ -183,7 +189,9 @@ pub const Nanolight = struct {
     /// The window's view: the panel, `margin` in from the window's edges.
     pub fn view(s: *Nanolight, c: *ui.Context) void {
         ui.key(c, c.print("panel-{d}", .{s.shown}));
-        const f = motion.frame(c, .{ .initial = .{ .opacity = 1, .y = -6, .scale = 0.985 }, .transition = .{ .spring = spring } });
+        // Opaque from the first frame: fading in from 0 flashed the glass behind it.
+        const entrance: motion.Target = .{ .opacity = 1, .y = -6, .scale = 0.985 };
+        const f = motion.frame(c, .{ .initial = if (s.window_fades) null else entrance, .transition = .{ .spring = spring } });
         const root = ui.div(c).wFull().p(s.margin).motion(f);
         defer root.end();
         s.panel(c);
@@ -212,6 +220,9 @@ pub const Nanolight = struct {
             o.view(c, s, p);
             return;
         };
+        if (s.settings_ui.open) return s.settings_ui.inPanel(c, s, p);
+        // A Raycast extension's command, while it runs (raycast_view.zig).
+        if (s.ext) |e| if (e.open) return e.panel(c, s, p);
 
         if (s.clip_mode) {
             s.clipFillDraw(c, p);
@@ -295,6 +306,8 @@ pub const Nanolight = struct {
             if (c.shortcut(.{ .key = S.escape })) s.back();
             return;
         }
+        // ⌘,: Settings, as on the Mac. The comma never reaches the field.
+        if (c.shortcut(.{ .key = ',', .cmd = true })) return s.openSettings();
         // ⌘↩: a search in the browser rather than in the panel.
         if (c.shortcut(.{ .key = S.enter, .cmd = true })) s.activateOut(c);
         // Enter / insertNewline activates before the header draws, so
@@ -409,11 +422,13 @@ pub const Nanolight = struct {
         if (@import("pic.zig").take(q)) |needle| {
             if (needle.len == 0) {
                 s.pics.clear();
+                s.pics_asked = 0;
             } else if (s.host) |host| {
-                if (host.pic) |ask| {
-                    s.pics.clear();
-                    ask(host.ctx, needle, &s.pics);
-                }
+                // The last words' hits stay until these words' arrive.
+                if (host.pic) |ask| if (std.hash.Wyhash.hash(0, needle) != s.pics_asked) {
+                    s.pics_asked = std.hash.Wyhash.hash(0, needle);
+                    ask(host.ctx, needle);
+                };
                 // No pic hook (tests): keep whatever hits were already set.
             }
             s.res.buildPic(s.pics.n);
@@ -423,11 +438,12 @@ pub const Nanolight = struct {
         if (@import("file.zig").take(q)) |needle| {
             if (needle.len == 0) {
                 s.files.clear();
+                s.files_asked = 0;
             } else if (s.host) |host| {
-                if (host.file) |ask| {
-                    s.files.clear();
-                    ask(host.ctx, needle, &s.files);
-                }
+                if (host.file) |ask| if (std.hash.Wyhash.hash(0, needle) != s.files_asked) {
+                    s.files_asked = std.hash.Wyhash.hash(0, needle);
+                    ask(host.ctx, needle);
+                };
                 // No file hook (tests): keep whatever hits were already set.
             }
             s.res.buildFile(s.files.n);
@@ -605,6 +621,10 @@ pub const Nanolight = struct {
                     ui.textf(c, .{ .size = 13.5, .weight = .medium, .color = p.text, .truncate = .ellipsis }, "Ask Codex “{s}”", .{s.ai_question[0..s.ai_question_len]});
                 }
             },
+            .settings => {
+                ui.text(c, "Nanolight Settings", .{ .size = 13.5, .weight = .medium, .color = p.text });
+                ui.text(c, "Shortcut, sync, updates", .{ .size = 12, .color = p.sub.alpha(0.8) });
+            },
             .suggest => {
                 const w = s.web.get(r.web);
                 ui.richText(c, w, s.added(i, w, p), .{ .size = 13.5, .color = p.text.alpha(0.72), .truncate = .ellipsis });
@@ -625,40 +645,13 @@ pub const Nanolight = struct {
         }
         ui.spacer(c);
         if (i == s.sel) {
-            ui.text(c, if (r.kind == .app or r.kind == .pic or r.kind == .file) "Open" else if (r.kind == .ai_answer) "Copy" else if (r.kind == .ai_ask) "Ask" else if (r.kind == .restart) "Restart" else if (r.kind == .quit) "Quit" else if (r.kind == .pm) "Send" else "Go", .{ .size = 12, .weight = .medium, .color = p.sub });
+            ui.text(c, if (r.kind == .app or r.kind == .settings or r.kind == .pic or r.kind == .file) "Open" else if (r.kind == .ai_answer) "Copy" else if (r.kind == .ai_ask) "Ask" else if (r.kind == .restart) "Restart" else if (r.kind == .quit) "Quit" else if (r.kind == .pm) "Send" else "Go", .{ .size = 12, .weight = .medium, .color = p.sub });
             ui.kbd(c, "↩");
-        } else if (i < 9) ui.textf(c, .{ .size = 12, .weight = .medium, .color = p.sub.alpha(0.5), .tabular = true }, "⌘{d}", .{i + 1});
+        } else if (i < 9) ui.textf(c, .{ .size = 12, .weight = .medium, .color = p.sub.alpha(0.5), .tabular = true }, "{s}{d}", .{ results.mod, i + 1 });
     }
 
-    /// The math as Raycast shows it: the expression, an arrow, the answer,
-    /// each over a small label; the answer's says Copied once it is.
     fn calcCard(s: *Nanolight, c: *ui.Context, p: Palette) void {
-        const half = (width - list_pad * 2 - 20 - 32 - 24) / 2;
-        {
-            const l = ui.div(c).column().w(half).itemsCenter().gap(6);
-            defer l.end();
-            ui.text(c, std.mem.trim(u8, s.query.text(), " ="), .{ .size = 20, .weight = .medium, .color = p.text.alpha(0.8), .tabular = true });
-            chip(c, p, "Expression", null);
-        }
-        {
-            const arrow = ui.div(c).size(32, 32).roundedFull().bg(p.tile).center();
-            defer arrow.end();
-            ui.icon(c, "arrow.right", .{ .size = 13, .weight = .semibold, .color = p.sub });
-        }
-        const r = ui.div(c).column().w(half).itemsCenter().gap(6);
-        defer r.end();
-        ui.text(c, s.res.answer, .{ .size = 28, .weight = .semibold, .color = p.text, .tabular = true, .tracking = -0.3 });
-        if (c.time - s.copied_at < 1.4) {
-            c.animationFrame();
-            chip(c, p, "Copied", c.theme.success);
-        } else chip(c, p, if (s.res.hex.len > 0) c.print("Result · {s}", .{s.res.hex}) else "Result", null);
-    }
-
-    fn chip(c: *ui.Context, p: Palette, str: []const u8, tone: ?ui.Color) void {
-        const d = ui.div(c).row().gap(4).px(8).h(20).itemsCenter().rounded(6).bg(if (tone) |t| t.alpha(0.16) else p.tile);
-        defer d.end();
-        if (tone) |t| ui.icon(c, "checkmark", .{ .size = 10, .weight = .bold, .color = t });
-        ui.text(c, str, .{ .size = 11, .weight = .medium, .color = tone orelse p.sub, .tabular = true });
+        @import("calc_card.zig").draw(c, p, s.query.text(), s.res.answer, s.res.hex, c.time - s.copied_at < 1.4);
     }
 
 
@@ -709,6 +702,7 @@ pub const Nanolight = struct {
             .ask_grok => "sparkles",
             .search_web => "globe",
             .suggest => "magnifyingglass",
+            .settings => "gearshape",
             else => "app.dashed",
         }, .{ .size = if (big) 16 else 13, .weight = .medium, .color = p.text });
     }
@@ -749,9 +743,17 @@ pub const Nanolight = struct {
             ui.textf(c, .{ .size = 12, .weight = .medium, .color = p.sub.alpha(0.8) }, "Nanolight {s} ({d}) · {d} apps", .{ build_options.version, build_options.build, s.index.apps.items.len });
         }
         ui.spacer(c);
+        {
+            ui.key(c, "settings-gear");
+            const g = ui.div(c).size(26, 26).rounded(7).center().control().hover(p.sel);
+            defer g.end();
+            if (g.clicked()) s.openSettings();
+            ui.icon(c, "gearshape", .{ .size = 13, .weight = .medium, .color = p.sub });
+            ui.text(c, "Settings", .{ .size = 1, .color = p.sub.alpha(0) });
+        }
         if (s.previewing) {
             ui.text(c, "Open in Browser", .{ .size = 12, .weight = .medium, .color = p.text.alpha(0.85) });
-            ui.kbd(c, "⌘↩");
+            ui.kbd(c, results.mod ++ "↩");
             ui.div(c).w(1).h(14).bg(p.hair).end();
             ui.text(c, "Back", .{ .size = 12, .color = p.sub.alpha(0.8) });
             ui.kbd(c, "esc");
@@ -817,13 +819,28 @@ pub const Nanolight = struct {
                 return;
             },
             .ask_grok, .search_x => s.go(results.url(&s.url_buf, r.kind, s.query.text())),
-            .search_web => s.search(s.query.text()),
+            .search_web => s.search(s.query.text(), !s.searches_out),
+            .settings => s.openSettings(),
             .suggest => {
                 // Its words fill the field, as a search box's would.
                 s.query.set(s.web.get(r.web));
-                s.search(s.query.text());
+                s.search(s.query.text(), !s.searches_out);
             },
         }
+    }
+
+    /// Picemon's hits for `needle`, if those are still the words asked for.
+    pub fn picsArrived(s: *Nanolight, needle: []const u8, hits: *const @import("pic.zig").List) void {
+        if (std.hash.Wyhash.hash(0, needle) != s.pics_asked) return;
+        s.pics = hits.*;
+        s.built = 1;
+    }
+
+    /// FSearch's hits for `needle`, if those are still the words asked for.
+    pub fn filesArrived(s: *Nanolight, needle: []const u8, hits: *const @import("file.zig").List) void {
+        if (std.hash.Wyhash.hash(0, needle) != s.files_asked) return;
+        s.files = hits.*;
+        s.built = 1;
     }
 
     pub fn openClipboard(s: *Nanolight) void {
@@ -841,26 +858,32 @@ pub const Nanolight = struct {
         };
     }
 
-    /// ⌘↩ on the selected row: a search opens in the browser.
+    /// ⌘↩ on the selected row: a search goes where Return doesn't send it.
     fn activateOut(s: *Nanolight, c: *ui.Context) void {
         if (s.res.n == 0) return;
         const r = s.res.rows[@min(s.sel, s.res.n - 1)];
         switch (r.kind) {
-            .search_web => s.go(results.url(&s.url_buf, .search_web, s.query.text())),
-            .suggest => s.go(results.url(&s.url_buf, .search_web, s.web.get(r.web))),
+            .search_web => s.search(s.query.text(), s.searches_out),
+            .suggest => s.search(s.web.get(r.web), s.searches_out),
             else => s.activate(c),
         }
     }
 
-    /// Google's page for `words`, in the panel if the host can show it.
-    fn search(s: *Nanolight, words: []const u8) void {
+    /// Google's page for `words`: in the panel when `in_panel` and the host
+    /// can show it there, else in the browser.
+    fn search(s: *Nanolight, words: []const u8, in_panel: bool) void {
         const h = s.host orelse return;
         const u = results.url(&s.preview_buf, .search_web, words);
-        const show = h.preview orelse return s.go(u);
+        const show = (if (in_panel) h.preview else null) orelse return s.go(u);
         s.preview_url = u;
         s.previewing = true;
         s.preview_q = std.hash.Wyhash.hash(0, s.query.text());
         show(h.ctx, u);
+    }
+
+    pub fn openSettings(s: *Nanolight) void {
+        s.back();
+        s.settings_ui.show();
     }
 
     /// The rows again, the page gone.

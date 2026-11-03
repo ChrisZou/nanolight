@@ -2,9 +2,10 @@
 
 <h1 align="center">Nanolight</h1>
 <p align="center"><b>A ⌘Space launcher for the Mac, drawn by <a href="https://github.com/justrach/nanoui">nanoui</a>.</b><br>
-Apps, math, and Ask Codex: one keystroke away. Native Zig, no Electron, about 1 MB.</p>
+Apps, math, files, images, clipboard history and Ask Codex: one keystroke away. Native Zig, no Electron.<br>
+<sub>A Mac-only fork of <a href="https://github.com/justrach/nanolight">justrach/nanolight</a>.</sub></p>
 
-<p align="center"><a href="https://github.com/justrach/nanolight/raw/refs/heads/main/docs/promo.mp4"><img src="docs/promo-preview.gif" alt="Nanolight in 31 seconds: apps, initials, typos, math, Google suggestions and results in the panel, on a MacBook Air" width="760"></a><br><sub><a href="https://github.com/justrach/nanolight/raw/refs/heads/main/docs/promo.mp4"><b>Watch it with sound →</b></a> · <a href="docs/promo.md">How it was made</a></sub></p>
+<p align="center"><a href="https://github.com/justrach/nanolight/raw/refs/heads/main/docs/promo.mp4"><img src="docs/promo-preview.gif" alt="Introducing Nanolight 2.0, now on Mac, Windows and Linux, in 40 seconds: a MacBook Air and a Dell XPS 13 side by side, then Settings, a Raycast extension and a script command on a MacBook Air, then Windows and Linux on a Dell XPS 13" width="760"></a><br><sub><a href="https://github.com/justrach/nanolight/raw/refs/heads/main/docs/promo.mp4"><b>Watch it with sound →</b></a> · <a href="docs/promo.md">How it was made</a></sub></p>
 
 <p align="center"><img src="docs/images/nanolight.jpg" alt="Nanolight's panel has found Safari from &quot;saf&quot;" width="760"></p>
 
@@ -19,11 +20,14 @@ Apps, math, and Ask Codex: one keystroke away. Native Zig, no Electron, about 1 
 - **⌘1–⌘9** run a row at once; ↑ ↓ and ⌃N ⌃P move.
 - Lives in the menu bar: no Dock icon, and nothing drawn while it's idle.
 - **Restart or quit from the panel**: type `reload` / `restart` / `re`…, Chinese `重启` / `重载`, or `quit` / `退出` / `关掉`, then Return.
-- **Message the project manager**: type `pm ` (or `PM `) plus a note, then Return. Nanolight POSTs to Chris's 项目经理 Grok Bot webhook; URL/key live in Application Support `pm-webhook.json` (not in the repo).
+- **Message a webhook**: type `pm ` (or `PM `) plus a note, then Return. Nanolight POSTs `{"text": …}` with a Bearer key, in the background, and a notification says whether it went. The URL and key live in `~/Library/Application Support/Nanolight/pm-webhook.json` (`{"url": "https://…", "key": "…"}`), never in the repo.
+- **Raycast extensions**: extensions from the [Raycast Store's repository](https://github.com/raycast/extensions) (MIT) run in the panel: their lists, details and forms, their actions on ⌘K. Choose **Install Raycast Extension…** to search the store. They are React and TypeScript, so they need [Node.js](https://nodejs.org) 20 or later on your computer; Nanolight brings none, and runs them through its own version of `@raycast/api` ([raycast/README.md](raycast/README.md)). AI, OAuth and the menu bar aren't supported.
+- **Raycast script commands** ([raycast/script-commands](https://github.com/raycast/script-commands), MIT): any script with `@raycast.*` comments, dropped in the Script Commands folder, is a row. Nanolight runs it itself, no Node needed: its arguments as a form, its output as it prints (`fullOutput`), its last line (`compact`), or nothing (`silent`).
+- **Settings in the panel**: ⌘,, the gear in the footer, or type "settings". **Show in Menu Bar** hides the menu bar icon; Settings stays a ⌘, away.
 
 ## Sync across Macs (optional)
 
-Off until you turn it on: choose **Sign In with Codegraff to Sync Across Macs…** in the menu bar icon's menu. Your browser opens codegraff.com to approve the sign-in, and from then on every Mac signed in to the same account shares:
+Off until you turn it on: choose **Sign In with Codegraff** in Settings or the menu bar icon's menu. Your browser opens codegraff.com to approve the sign-in, and from then on every Mac signed in to the same account shares:
 
 - the key that opens Nanolight,
 - whether Google suggestions are on,
@@ -43,9 +47,9 @@ History stays local, outside Codegraff sync, with limits of 200 items, 7 days an
 
 ## Install
 
-Download `nanolight-macos-arm64.dmg` from the [latest release](https://github.com/justrach/nanolight/releases/latest), open it and drag Nanolight to Applications. macOS 14 or later, Apple silicon.
+Build it (below) and copy `zig-out/Nanolight.app` to Applications. macOS 14 or later, Apple silicon. Signed releases of this fork, if any are published, update themselves from [this fork's releases](https://github.com/ChrisZou/nanolight/releases), never upstream's.
 
-On first run a short welcome picks the key that opens it (⌘Space, ⌥Space, ⌃Space or ⌥⌘Space) and says who else holds it: Spotlight gives up ⌘Space in System Settings → Keyboard → Keyboard Shortcuts → Spotlight. Signed releases update themselves from this repository's releases; the menu bar icon offers the restart.
+On first run a short welcome picks the key that opens it (⌘Space, ⌥Space, ⌃Space or ⌥⌘Space; any other can be recorded later in Settings) and says who else holds it. Spotlight gives up ⌘Space in System Settings → Keyboard → Keyboard Shortcuts → Spotlight.
 
 ## Build
 
@@ -55,7 +59,9 @@ You need Zig 0.17.0 and Xcode or the Command Line Tools.
 zig build test      # search, math, suggestions and the panel, through nanoui's Tester
 zig build run       # build and open it
 zig build app       # zig-out/Nanolight.app, for /Applications
+zig build app -Dbuild=4   # the build number the footer shows; bump it each time you ship
 VERSION=0.1.0 sh macos/package.sh   # the release: signed app, disk image, update zip, manifest.json
+cd raycast && npm test              # the Raycast extensions' host
 ```
 
 `macos/package.sh` signs with `$CODESIGN_IDENTITY` and notarizes when notary credentials are set (see the script); otherwise it signs ad hoc. Pushing a `v*` tag runs `.github/workflows/release.yml`, which builds, signs and attaches the release.
@@ -74,10 +80,16 @@ VERSION=0.1.0 sh macos/package.sh   # the release: signed app, disk image, updat
 | `src/file.zig` | FSearch whole-disk file search (`f ` / `find ` / `file `) |
 | `src/ai.zig` | One-shot Codex Q&A (`ai ` / `ask `) |
 | `src/pm.zig` | Project-manager webhook (`pm ` / `PM `) |
+| `src/lookup.zig` | Runs the Picemon and FSearch searches off the main thread |
+| `src/clipboard*.zig` | Clipboard history: capture, store, panel, paste |
 | `src/preview.zig` | The results page in the panel (WKWebView) |
-| `src/onboard.zig`, `src/shortcut.zig` | The welcome, and which key is free |
+| `src/panel_mac.zig`, `src/panel_pc.zig` | The panel's window on the Mac, and on Windows and Linux |
+| `src/hotkey*.zig`, `src/apps_*.zig`, `src/single*.zig`, `src/login.zig`, `src/keychain*.zig` | Each platform's key, apps, single copy, login item and secret |
+| `src/raycast*.zig`, `raycast/` | Raycast extensions: the panel's screen, the Node host and its `@raycast/api` |
+| `src/script_commands.zig`, `src/script_run.zig` | Raycast script commands, run in Zig |
+| `src/onboard.zig`, `src/shortcut.zig`, `src/recorder.zig` | The welcome, which key is free, recording one's own |
 | `src/film.zig`, `src/stage.zig`, `tools/film.sh` | The walkthrough, rendered offscreen |
-| `src/promo.zig`, `src/promo_cards.zig`, `tools/promo.sh`, `tools/promo/` | The promo: nanoui's shots, Blender's laptop ([docs/promo.md](docs/promo.md)) |
+| `src/promo.zig`, `src/promo_scene.zig`, `src/promo_camera.zig`, `tools/promo.sh`, `tools/promo/` | The promo: nanoui's shots, Blender's laptops, the Windows and Linux recordings ([docs/promo.md](docs/promo.md)) |
 
 The icon is drawn by `tools/icon.py`. `src/backdrop.jpg` (the film's cover art) was made with OpenAI's image model.
 

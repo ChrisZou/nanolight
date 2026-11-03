@@ -6,6 +6,12 @@
 const std = @import("std");
 const search = @import("search.zig");
 const calc = @import("calc.zig");
+const mac = @import("builtin").os.tag == .macos;
+
+/// The key held for the panel's shortcuts (⌘1, ⌘↩, ⌘,): Ctrl on a PC.
+pub const mod = if (mac) "⌘" else "Ctrl+";
+/// What the panel calls the computer it runs on.
+pub const machine = if (mac) "Mac" else "PC";
 
 pub const Kind = enum {
     clipboard,
@@ -30,6 +36,8 @@ pub const Kind = enum {
     search_web,
     /// One of Google's completions (`Row.web`).
     suggest,
+    /// Nanolight's own Settings, listed when the query asks for them.
+    settings,
 
     /// The row's kind as its trailing label shows it.
     pub fn label(k: Kind) []const u8 {
@@ -41,6 +49,7 @@ pub const Kind = enum {
             .pic => "Image",
             .file => "File",
             .ai_ask, .ai_answer => "AI",
+            .settings => "Nanolight",
             .ask_grok, .search_x, .search_web, .suggest => "Web",
         };
     }
@@ -58,6 +67,7 @@ pub const Kind = enum {
             .file => "Open File",
             .ai_ask => "Ask Codex",
             .ai_answer => "Copy Answer",
+            .settings => "Open Settings",
             .ask_grok => "Ask Grok",
             .search_x => "Search X",
             .search_web, .suggest => "Search Google",
@@ -73,6 +83,7 @@ pub const Kind = enum {
             .pic => "Images",
             .file => "Files",
             .ai_ask, .ai_answer => "AI",
+            .settings => "Nanolight",
             .search_web, .suggest => "Google",
             .ask_grok, .search_x => "Ask & Search",
         };
@@ -153,6 +164,9 @@ pub const Results = struct {
         var ranked: [max_apps]search.Ranked = undefined;
         const n = search.rank(query, names, boost, &ranked);
         for (ranked[0..n]) |x| r.push(.{ .kind = .app, .app = x.index, .match = x.match });
+        // "settings" / "preferences": Nanolight's own screen, right under
+        // the apps: Return still opens System Settings, a key away from this.
+        if (isSettings(query)) r.push(.{ .kind = .settings });
         if (r.n > 0 and r.rows[0].kind == .calc) return;
         _ = web;
         _ = handoffs;
@@ -196,6 +210,11 @@ pub const Results = struct {
         r.push(.{ .kind = .pm });
     }
 
+    /// "settings" and "preferences", the words people type for this.
+    fn isSettings(query: []const u8) bool {
+        return std.ascii.eqlIgnoreCase(query, "settings") or std.ascii.eqlIgnoreCase(query, "preferences");
+    }
+
     fn push(r: *Results, row: Row) void {
         if (r.n == max_rows) return;
         r.rows[r.n] = row;
@@ -217,7 +236,7 @@ pub fn url(buf: []u8, kind: Kind, query: []const u8) []const u8 {
         .ask_grok => "https://grok.com/?q=",
         .search_x => "https://x.com/search?f=live&q=",
         .search_web, .suggest => "https://www.google.com/search?q=",
-        .calc, .app, .clipboard, .restart, .quit, .pm, .pic, .file, .ai_ask, .ai_answer => return "",
+        .calc, .app, .settings, .clipboard, .restart, .quit, .pm, .pic, .file, .ai_ask, .ai_answer => return "",
     };
     var w: std.Io.Writer = .fixed(buf);
     w.writeAll(base) catch return "";

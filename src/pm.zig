@@ -22,73 +22,54 @@ pub fn configPath(buf: []u8, home: []const u8) []const u8 {
     return std.fmt.bufPrint(buf, "{s}/Library/Application Support/Nanolight/pm-webhook.json", .{home}) catch "";
 }
 
-/// POST `body_in` to the project-manager webhook. Returns true on HTTP 2xx.
-pub fn postWebhook(gpa: std.mem.Allocator, io: std.Io, home: []const u8, body_in: []const u8) bool {
+/// Seconds the webhook gets before the note counts as failed.
+pub const timeout_s: f64 = 10;
+
+/// What a POST to the webhook needs, owned by `arena`.
+pub const Post = struct {
+    url: []const u8,
+    auth: []const u8,
+    json: []const u8,
+};
+
+/// Reads the webhook config and builds the POST for `body_in` into
+/// `arena`. Null when the note is empty or too long, or the config is
+/// missing or not https.
+pub fn prepare(arena: std.mem.Allocator, io: std.Io, home: []const u8, body_in: []const u8) ?Post {
     const body = std.mem.trim(u8, body_in, " \t\r\n");
-    if (home.len == 0 or body.len == 0 or body.len > max_body) return false;
+    if (home.len == 0 or body.len == 0 or body.len > max_body) return null;
 
     var path_buf: [512]u8 = undefined;
     const path = configPath(&path_buf, home);
-    if (path.len == 0) return false;
+    if (path.len == 0) return null;
+    const raw = std.Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(8 * 1024)) catch return null;
+    return fromConfig(arena, raw, body);
+}
 
-    const raw = std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(8 * 1024)) catch return false;
-    defer gpa.free(raw);
-
-    var arena: std.heap.ArenaAllocator = .init(gpa);
-    defer arena.deinit();
+/// `prepare` past reading the file: the config's JSON and the note.
+pub fn fromConfig(arena: std.mem.Allocator, raw: []const u8, body: []const u8) ?Post {
     const Config = struct { url: []const u8, key: []const u8 };
-    const cfg = std.json.parseFromSliceLeaky(Config, arena.allocator(), raw, .{ .ignore_unknown_fields = true }) catch return false;
-    if (cfg.url.len == 0 or !std.mem.startsWith(u8, cfg.url, "https://")) return false;
-    if (cfg.key.len == 0) return false;
-
+    const cfg = std.json.parseFromSliceLeaky(Config, arena, raw, .{ .ignore_unknown_fields = true }) catch return null;
+    if (!std.mem.startsWith(u8, cfg.url, "https://")) return null;
     const key = stripCrLf(cfg.key);
-    if (key.len == 0) return false;
-
+    if (key.len == 0) return null;
     const auth = if (std.mem.startsWith(u8, key, "Bearer "))
         key
     else
-        std.fmt.allocPrint(arena.allocator(), "Bearer {s}", .{key}) catch return false;
-
+        std.fmt.allocPrint(arena, "Bearer {s}", .{key}) catch return null;
     const Payload = struct { text: []const u8 };
-    const json = std.json.Stringify.valueAlloc(gpa, Payload{ .text = body }, .{}) catch return false;
-    defer gpa.free(json);
-
-    const auth_header = std.fmt.allocPrint(gpa, "Authorization: {s}", .{auth}) catch return false;
-    defer gpa.free(auth_header);
-
-    const argv = [_][]const u8{
-        "/usr/bin/curl",
-        "-sS",
-        "-o",
-        "/dev/null",
-        "-w",
-        "%{http_code}",
-        "-X",
-        "POST",
-        cfg.url,
-        "-H",
-        auth_header,
-        "-H",
-        "Content-Type: application/json",
-        "--data-binary",
-        json,
-    };
-    const result = std.process.run(gpa, io, .{
-        .argv = &argv,
-        .stdout_limit = .limited(64),
-        .stderr_limit = .limited(1024),
-        .create_no_window = true,
-    }) catch return false;
-    defer gpa.free(result.stdout);
-    defer gpa.free(result.stderr);
-
-    const code_s = std.mem.trim(u8, result.stdout, " \t\r\n");
-    const code = std.fmt.parseInt(u16, code_s, 10) catch return false;
-    return code >= 200 and code < 300;
+    const json = std.json.Stringify.valueAlloc(arena, Payload{ .text = body }, .{}) catch return null;
+    return .{ .url = cfg.url, .auth = auth, .json = json };
 }
 
-/// Optional macOS banner; failures are ignored.
+/// A macOS banner saying whether it went, from a thread of its own (the
+/// panel never waits on osascript); failures are ignored.
 pub fn notify(gpa: std.mem.Allocator, io: std.Io, ok: bool) void {
+    const t = std.Thread.spawn(.{}, notifyNow, .{ gpa, io, ok }) catch return;
+    t.detach();
+}
+
+fn notifyNow(gpa: std.mem.Allocator, io: std.Io, ok: bool) void {
     const script = if (ok)
         \\display notification "已发送" with title "发给项目经理"
     else
@@ -134,4 +115,18 @@ test "config path under Application Support" {
         "/Users/chris/Library/Application Support/Nanolight/pm-webhook.json",
         configPath(&buf, "/Users/chris"),
     );
+}
+
+test "a webhook POST carries the note as JSON and the key as a Bearer token" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const post = fromConfig(a, "{\"url\":\"https://example.com/hook\",\"key\":\"abc\\n\"}", "say \"hi\"").?;
+    try std.testing.expectEqualStrings("https://example.com/hook", post.url);
+    try std.testing.expectEqualStrings("Bearer abc", post.auth);
+    try std.testing.expectEqualStrings("{\"text\":\"say \\\"hi\\\"\"}", post.json);
+    try std.testing.expectEqualStrings("Bearer xyz", fromConfig(a, "{\"url\":\"https://e.com\",\"key\":\"Bearer xyz\"}", "x").?.auth);
+    // Plain http, or no key: nothing is sent.
+    try std.testing.expect(fromConfig(a, "{\"url\":\"http://e.com\",\"key\":\"k\"}", "x") == null);
+    try std.testing.expect(fromConfig(a, "{\"url\":\"https://e.com\",\"key\":\" \"}", "x") == null);
 }

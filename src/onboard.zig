@@ -13,6 +13,8 @@ const ui = nanoui.ui;
 const motion = ui.motion;
 const panel = @import("view.zig");
 const shortcut = @import("shortcut.zig");
+const results = @import("results.zig");
+const mac = @import("builtin").os.tag == .macos;
 const Choice = shortcut.Choice;
 const Palette = panel.Palette;
 
@@ -31,9 +33,16 @@ pub const Hooks = struct {
     done: *const fn (ctx: *anyopaque) void,
 };
 
-const examples = [_]struct { q: []const u8, what: []const u8, icon: []const u8 }{
-    .{ .q = "saf", .what = "Open Safari", .icon = "app.badge" },
-    .{ .q = "2^10 * 3", .what = "Do math", .icon = "plus.forwardslash.minus" },
+const Example = struct { q: []const u8, what: []const u8, icon: []const u8 };
+/// An app every machine of the kind has, math, and words for Grok or X;
+/// icons nanoui draws there (SF Symbols on the Mac, its own set elsewhere).
+const examples = [_]Example{
+    switch (@import("builtin").os.tag) {
+        .macos => .{ .q = "saf", .what = "Open Safari", .icon = "app.badge" },
+        .windows => .{ .q = "note", .what = "Open Notepad", .icon = "doc.text" },
+        else => .{ .q = "term", .what = "Open a terminal", .icon = "terminal" },
+    },
+    .{ .q = "2^10 * 3", .what = "Do math", .icon = if (mac) "plus.forwardslash.minus" else "plus" },
     .{ .q = "liquid glass", .what = "Ask Grok or search X", .icon = "sparkles" },
 };
 
@@ -42,7 +51,7 @@ pub const Onboard = struct {
     step: Step = .key,
     choice: Choice = .cmd_space,
     hooks: ?Hooks = null,
-    system_buf: [16]shortcut.SystemKey = undefined,
+    system_buf: [96]shortcut.SystemKey = undefined,
     system: []const shortcut.SystemKey = &.{},
     others: shortcut.Others = .{},
     /// Step 2: the shortcut closed the panel, then opened it again.
@@ -109,8 +118,8 @@ pub const Onboard = struct {
     }
 
     fn keyStep(o: *Onboard, c: *ui.Context, p: Palette, enter: bool) void {
-        if (c.input.key == .left) o.choice = Choice.all[(@intFromEnum(o.choice) + Choice.all.len - 1) % Choice.all.len];
-        if (c.input.key == .right) o.choice = Choice.all[(@intFromEnum(o.choice) + 1) % Choice.all.len];
+        if (c.input.key == .left) o.choice = o.choice.step(-1);
+        if (c.input.key == .right) o.choice = o.choice.step(1);
         if (enter) return o.next(c, .try_it);
         {
             const top = ui.div(c).row().wFull().px(28).pt(28).pb(22).gap(16).itemsCenter();
@@ -128,14 +137,18 @@ pub const Onboard = struct {
         {
             const row = ui.div(c).row().gap(8);
             defer row.end();
-            for (Choice.all) |ch| {
-                ui.key(c, @tagName(ch));
-                const on = ch == o.choice;
+            // The four, and a key recorded in Settings when it is the one.
+            var shown: [Choice.all.len + 1]Choice = undefined;
+            @memcpy(shown[0..Choice.all.len], &Choice.all);
+            shown[Choice.all.len] = o.choice;
+            for (shown[0 .. Choice.all.len + @intFromBool(o.choice.preset() == null)]) |ch| {
+                ui.key(c, c.print("key-{d}-{d}", .{ ch.code, ch.mods }));
+                const on = ch.eql(o.choice);
                 const b = ui.div(c).row().h(36).px(16).itemsCenter().rounded(10).control()
                     .bg(if (on) p.sel else p.tile.alpha(0.5)).border(if (on) p.text.alpha(0.35) else p.rim);
                 defer b.end();
                 if (b.clicked()) o.choice = ch;
-                ui.text(c, ch.label(), .{ .size = 14, .weight = if (on) .semibold else .medium, .color = if (on) p.text else p.sub });
+                ui.text(c, c.print("{f}", .{ch}), .{ .size = 14, .weight = if (on) .semibold else .medium, .color = if (on) p.text else p.sub });
             }
         }
         o.status(c, p);
@@ -148,7 +161,7 @@ pub const Onboard = struct {
     /// Who else answers the keys, by name, and the one thing that frees them.
     fn status(o: *Onboard, c: *ui.Context, p: Palette) void {
         const cl = o.clash();
-        const keys = o.choice.label();
+        const keys = c.print("{f}", .{o.choice});
         const ok = c.theme.success;
         const warn: ui.Color = if (c.theme.dark) .hex(0xe0a33a) else .hex(0xb26b00);
         const box = ui.div(c).column().wFull().gap(8).p(12).rounded(10).bg((if (cl.clear()) ok else warn).alpha(0.1));
@@ -156,17 +169,23 @@ pub const Onboard = struct {
         const line = ui.div(c).row().gap(8).itemsCenter();
         if (cl.clear()) {
             ui.icon(c, "checkmark.circle.fill", .{ .size = 14, .color = ok });
-            ui.textf(c, .{ .size = 13, .weight = .medium, .color = p.text }, "{s} is free on this Mac.", .{keys});
+            ui.textf(c, .{ .size = 13, .weight = .medium, .color = p.text }, "{s} is free on this {s}.", .{ keys, results.machine });
             line.end();
             return;
         }
         ui.icon(c, "exclamationmark.triangle.fill", .{ .size = 13, .color = warn });
         if (cl.system) |who| {
-            ui.textf(c, .{ .size = 13, .weight = .medium, .color = p.text }, "macOS gives {s} to {s} first.", .{ keys, who });
+            ui.textf(c, .{ .size = 13, .weight = .medium, .color = p.text }, if (mac) "macOS gives {s} to {s} first." else "{s} is held by {s}.", .{ keys, who });
         } else {
             ui.textf(c, .{ .size = 13, .weight = .medium, .color = p.text }, "{s} {s} running and may answer {s} too.", .{ list(c, cl.launchers), if (cl.launchers.len == 1) "is" else "are", keys });
         }
         line.end();
+        // A PC has no one place to free a key: another one is the fix.
+        if (!mac and cl.system != null) {
+            const r = ui.div(c).row().pl(22);
+            ui.text(c, "Pick another key above.", .{ .size = 12, .color = p.sub.alpha(0.8) });
+            return r.end();
+        }
         const fix = ui.div(c).row().gap(10).itemsCenter().pl(22);
         defer fix.end();
         const label = if (cl.system != null) "Open Keyboard Shortcuts" else c.print("Quit {s}", .{cl.launchers[0]});
@@ -198,20 +217,24 @@ pub const Onboard = struct {
             const caps = ui.div(c).row().gap(10).itemsCenter();
             defer caps.end();
             const ch = o.choice;
-            const held_mod = switch (ch) {
-                .cmd_space => c.input.cmd,
-                .opt_space => c.input.alt,
-                .ctrl_space => c.input.ctrl,
-                .opt_cmd_space => c.input.alt and c.input.cmd,
-            };
-            cap(c, p, ch.mods(), 68, held_mod or o.reopened);
-            ui.text(c, "+", .{ .size = 20, .weight = .medium, .color = p.sub.alpha(0.6) });
-            cap(c, p, "Space", 180, o.reopened);
+            const hotkey = @import("hotkey.zig");
+            const pc = ch.pc();
+            const held_mod = if (!mac) (!pc.ctrl or c.input.ctrl) and (!pc.alt or c.input.alt) and (!pc.shift or c.input.shift) else (ch.mods & hotkey.cmd == 0 or c.input.cmd) and (ch.mods & hotkey.option == 0 or c.input.alt) and
+                (ch.mods & hotkey.control == 0 or c.input.ctrl) and (ch.mods & hotkey.shift == 0 or c.input.shift);
+            const mods = c.print("{f}", .{ch.held()});
+            if (mods.len > 0) {
+                // A PC's "Ctrl Alt" is words, not glyphs: wider per key.
+                const n: f32 = @floatFromInt(@popCount(ch.mods));
+                const w: f32 = if (mac) 68 + 22 * @max(0, n - 2) else 40 + 8 * @as(f32, @floatFromInt(mods.len));
+                cap(c, p, mods, w, held_mod or o.reopened);
+                ui.text(c, "+", .{ .size = 20, .weight = .medium, .color = p.sub.alpha(0.6) });
+            }
+            cap(c, p, c.print("{f}", .{ch.key()}), if (ch.code == hotkey.space) 180 else 68, o.reopened);
         }
         {
             const t = ui.div(c).column().gap(6).itemsCenter();
             defer t.end();
-            ui.textf(c, .{ .size = 20, .weight = .semibold, .color = p.text, .tracking = -0.2 }, "Press {s} now", .{o.choice.label()});
+            ui.textf(c, .{ .size = 20, .weight = .semibold, .color = p.text, .tracking = -0.2 }, "Press {f} now", .{o.choice});
             ui.text(c, "It closes. Press it again and it comes back, from any app.", .{ .size = 13.5, .color = p.sub });
         }
         const ticks = ui.div(c).row().gap(10);
@@ -243,7 +266,7 @@ pub const Onboard = struct {
             const top = ui.div(c).column().wFull().px(28).pt(26).pb(16).gap(4);
             defer top.end();
             ui.text(c, "You're set.", .{ .size = 22, .weight = .semibold, .color = p.text, .tracking = -0.3 });
-            ui.textf(c, .{ .size = 13.5, .color = p.sub }, "{s} opens it anywhere. Start with one of these:", .{o.choice.label()});
+            ui.textf(c, .{ .size = 13.5, .color = p.sub }, "{f} opens it anywhere. Start with one of these:", .{o.choice});
         }
         {
             const rows = ui.div(c).column().wFull().px(16).gap(2);
@@ -259,7 +282,7 @@ pub const Onboard = struct {
                 ui.textf(c, .{ .size = 13.5, .weight = .medium, .color = p.text, .mono = true }, "{s}", .{e.q});
                 ui.text(c, e.what, .{ .size = 12, .color = p.sub.alpha(0.8) });
                 ui.spacer(c);
-                ui.textf(c, .{ .size = 12, .weight = .medium, .color = p.sub.alpha(0.55), .tabular = true }, "⌘{d}", .{i + 1});
+                ui.textf(c, .{ .size = 12, .weight = .medium, .color = p.sub.alpha(0.55), .tabular = true }, "{s}{d}", .{ results.mod, i + 1 });
             }
         }
         const home = ui.div(c).column().wFull().px(28).pt(16).gap(12);
@@ -270,7 +293,7 @@ pub const Onboard = struct {
             const tile = ui.div(c).size(26, 22).rounded(6).bg(p.tile).center();
             ui.icon(c, "magnifyingglass", .{ .size = 12, .weight = .semibold, .color = p.text });
             tile.end();
-            ui.text(c, "It lives in your menu bar. This welcome is in its menu, too.", .{ .size = 12.5, .color = p.sub });
+            ui.text(c, if (mac) "Settings are on ⌘, and the gear. It also lives in your menu bar." else "Settings are on Ctrl+, and the gear at the bottom of the panel.", .{ .size = 12.5, .color = p.sub });
         }
         const h = o.hooks orelse return;
         const f = h.login orelse return;
@@ -286,7 +309,7 @@ pub const Onboard = struct {
         ui.textf(c, .{ .size = 12, .color = p.sub.alpha(0.8), .tabular = true }, "  {d} of 3", .{n + 1});
         ui.spacer(c);
         const action: []const u8 = switch (o.step) {
-            .key => if (o.clash().clear()) "Continue" else c.print("Use {s} anyway", .{o.choice.label()}),
+            .key => if (o.clash().clear()) "Continue" else c.print("Use {f} anyway", .{o.choice}),
             .try_it => "",
             .done => "Start searching",
         };

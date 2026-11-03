@@ -99,9 +99,34 @@ pub fn findBin(io: std.Io, buf: []u8, home: []const u8) []const u8 {
     return "";
 }
 
+/// FSearch is asked for this many, so `max_rows` remain once `wanted`
+/// drops the noise.
+pub const ask_rows = 32;
+
 /// `needle` plus `limit:N` into `buf` for the CLI query.
 pub fn cliQuery(buf: []u8, needle: []const u8) []const u8 {
-    return std.fmt.bufPrint(buf, "{s} limit:{d}", .{ needle, max_rows }) catch "";
+    return std.fmt.bufPrint(buf, "{s} limit:{d}", .{ needle, ask_rows }) catch "";
+}
+
+/// Where apps keep their own data: never what someone types `f` for, and
+/// full of long generated names a fuzzy match catches by chance.
+const noise = [_][]const u8{
+    "/Library/Caches/",         "/Library/Application Support/", "/Library/Containers/",
+    "/Library/Group Containers/", "/Library/Logs/",              "/Library/Saved Application State/",
+    "/.Trash/",                 "/node_modules/",                "/.git/",
+    "/.zig-cache/",             "/.cache/",                      "/DerivedData/",
+};
+
+/// Whether `path` is worth a row for `needle`: outside app data, and
+/// holding every typed word (`key:value` filters aside), case aside.
+pub fn wanted(path: []const u8, needle: []const u8) bool {
+    for (noise) |n| if (std.mem.indexOf(u8, path, n) != null) return false;
+    var words = std.mem.tokenizeAny(u8, needle, " \t");
+    while (words.next()) |w| {
+        if (std.mem.indexOfScalar(u8, w, ':') != null) continue;
+        if (std.ascii.findIgnoreCase(path, w) == null) return false;
+    }
+    return true;
 }
 
 const JsonHit = struct {
@@ -114,8 +139,9 @@ const JsonResp = struct {
     hits: []const JsonHit = &.{},
 };
 
-/// FSearch `--json` body into `out` (paths only; dirs flagged).
-pub fn decode(out: *List, body: []const u8) void {
+/// FSearch `--json` body into `out` (paths only; dirs flagged), keeping
+/// only what `wanted` keeps for `needle`.
+pub fn decode(out: *List, body: []const u8, needle: []const u8) void {
     out.clear();
     if (body.len == 0) return;
     // Stack arena: enough for a short hits list.
@@ -124,7 +150,7 @@ pub fn decode(out: *List, body: []const u8) void {
     const parsed = std.json.parseFromSliceLeaky(JsonResp, fba.allocator(), body, .{ .ignore_unknown_fields = true }) catch return;
     if (!parsed.ok) return;
     for (parsed.hits) |h| {
-        if (h.path.len == 0) continue;
+        if (h.path.len == 0 or !wanted(h.path, needle)) continue;
         out.push(h.path, std.mem.eql(u8, h.kind, "dir"));
     }
 }
@@ -152,7 +178,7 @@ pub fn search(gpa: std.mem.Allocator, io: std.Io, home: []const u8, needle_in: [
     defer gpa.free(result.stdout);
     defer gpa.free(result.stderr);
     // FSearch prints JSON on stdout even when indexing (ok:false); decode handles it.
-    decode(out, result.stdout);
+    decode(out, result.stdout, needle);
 }
 
 fn startsIgnoreCase(hay: []const u8, needle: []const u8) bool {
@@ -179,20 +205,31 @@ test "f/find/file prefixes" {
 
 test "cliQuery appends limit" {
     var buf: [64]u8 = undefined;
-    try std.testing.expectEqualStrings("readme limit:8", cliQuery(&buf, "readme"));
+    try std.testing.expectEqualStrings("readme limit:32", cliQuery(&buf, "readme"));
 }
 
 test "decode json hits" {
     var list: List = .{};
     decode(&list,
         \\{"hits":[{"kind":"file","path":"/Users/chris/a/one.txt","score":1},{"kind":"dir","path":"/Users/chris/a/two","score":2},{"kind":"file","path":"/Users/chris/a/one.txt","score":1}],"ok":true}
-    );
+    , "a");
     try std.testing.expectEqual(@as(usize, 2), list.n);
     try std.testing.expectEqualStrings("/Users/chris/a/one.txt", list.get(0).slice());
     try std.testing.expect(!list.get(0).is_dir);
     try std.testing.expectEqualStrings("two", list.get(1).name());
     try std.testing.expectEqualStrings("a", list.get(1).folder());
     try std.testing.expect(list.get(1).is_dir);
-    decode(&list, "{\"ok\":false,\"error\":\"indexing\"}");
+    decode(&list, "{\"ok\":false,\"error\":\"indexing\"}", "a");
     try std.testing.expectEqual(@as(usize, 0), list.n);
+}
+
+test "app data and paths missing a typed word are dropped" {
+    const t = std.testing;
+    try t.expect(wanted("/Users/chris/code/README.md", "readme"));
+    try t.expect(wanted("/Users/chris/Documents/Q3 Report.pdf", "q3 report"));
+    try t.expect(wanted("/Users/chris/Documents/Q3 Report.pdf", "report ext:pdf"));
+    try t.expect(!wanted("/Users/chris/Documents/Q3 Report.pdf", "q4 report"));
+    try t.expect(!wanted("/Users/chris/Library/Application Support/Grok Bot/sand/onqw4zbomnwg.blob", "zzqxnotexist"));
+    try t.expect(!wanted("/Users/chris/Library/Caches/readme.txt", "readme"));
+    try t.expect(!wanted("/Users/chris/code/app/node_modules/x/README.md", "readme"));
 }

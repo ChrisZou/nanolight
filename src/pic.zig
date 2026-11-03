@@ -11,7 +11,8 @@ const std = @import("std");
 pub const max_rows = 8;
 pub const max_path = 512;
 pub const max_query = 120;
-pub const max_sql = 1024;
+/// Four escaped needles (each at most twice `max_query`) and the query.
+pub const max_sql = 4 * 2 * max_query + 512;
 
 /// Alfred-like prefixes; the rest of the query is the needle.
 pub const prefixes = [_][]const u8{ "img ", "pic " };
@@ -119,7 +120,8 @@ pub fn search(gpa: std.mem.Allocator, io: std.Io, home: []const u8, needle_in: [
     if (q.len == 0) return;
 
     const result = std.process.run(gpa, io, .{
-        .argv = &.{ "/usr/bin/sqlite3", db, q },
+        // Read-only: never in the way of Picemon writing its index.
+        .argv = &.{ "/usr/bin/sqlite3", "-readonly", db, q },
         .stdout_limit = .limited(64 * 1024),
         .stderr_limit = .limited(4 * 1024),
         .create_no_window = true,
@@ -190,4 +192,16 @@ test "decode paths" {
     try std.testing.expectEqualStrings("/a/one.png", list.get(0).slice());
     try std.testing.expectEqualStrings("two.jpg", list.get(1).name());
     try std.testing.expectEqualStrings("b", list.get(1).folder());
+}
+
+test "the longest query still fits" {
+    var esc: [max_query * 2]u8 = undefined;
+    var buf: [max_sql]u8 = undefined;
+    // Every byte escaped: the worst case.
+    const needle: [max_query]u8 = @splat('%');
+    try std.testing.expect(sql(&buf, &esc, &needle).len > 0);
+    // Forty hanzi (three bytes each).
+    var han: [120]u8 = undefined;
+    for (0..40) |i| @memcpy(han[i * 3 ..][0..3], "羽");
+    try std.testing.expect(sql(&buf, &esc, &han).len > 0);
 }

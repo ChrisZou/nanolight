@@ -152,7 +152,7 @@ pub const Scene = struct {
         const lines = [_]struct { f32, []const u8, f32, ui.Weight, f32, f32, f32 }{
             // when, words, size, weight, alpha, x, y
             .{ 0.7, "Nanolight", 76, .bold, 0.97, ix + icon + gap, iy + 8 },
-            .{ 0.95, "Opens with ⌘ Space", 26, .medium, 0.6, 0, iy + icon + 46 },
+            .{ 0.95, "Mac  ·  Windows  ·  Linux", 26, .medium, 0.6, 0, iy + icon + 46 },
             .{ 1.3, "github.com/justrach/nanolight", 18, .medium, 0.4, 0, iy + icon + 92 },
         };
         for (lines, 0..) |l, i| {
