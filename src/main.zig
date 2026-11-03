@@ -115,14 +115,9 @@ const Live = struct {
 
     fn pmSend(ctx: *anyopaque, body: []const u8) void {
         const l: *Live = @ptrCast(@alignCast(ctx));
-        var path_buf: [640]u8 = undefined;
-        const n = @import("pm.zig").writeOutbox(l.app.io, l.home, body, &path_buf);
-        if (n == 0) {
-            std.log.warn("nanolight: pm outbox write failed", .{});
-            return;
-        }
-        std.log.info("nanolight: pm outbox {s}", .{path_buf[0..n]});
-        @import("pm.zig").notify(l.app.gpa, l.app.io);
+        const ok = @import("pm.zig").postWebhook(l.app.gpa, l.app.io, l.home, body);
+        if (!ok) std.log.warn("nanolight: pm webhook failed", .{});
+        @import("pm.zig").notify(l.app.gpa, l.app.io, ok);
     }
 
     // ----- sync (account.zig) -----

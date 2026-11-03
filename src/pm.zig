@@ -1,10 +1,7 @@
-//! Send a note to Chris's project-manager bot via the local outbox.
-//! Keyword: `pm ` / `PM `. Return writes UTF-8 text under
-//! `~/Library/Application Support/Nanolight/outbox/`; a Grok Bot routine
-//! forwards it with SendToAgent. Nanolight itself does not talk to the bot.
+//! Send a note to Chris's 项目经理 Grok Bot via its webhook.
+//! Keyword: `pm ` / `PM `. Return POSTs JSON `{"text":…}` using URL/key from
+//! `~/Library/Application Support/Nanolight/pm-webhook.json` (not in the repo).
 const std = @import("std");
-
-extern "c" fn time(t: ?*i64) i64;
 
 pub const max_body = 2000;
 pub const prefixes = [_][]const u8{ "pm ", "PM " };
@@ -19,35 +16,83 @@ pub fn take(query_in: []const u8) ?[]const u8 {
     return null;
 }
 
-/// Absolute outbox directory into `buf` (no trailing slash).
-pub fn outboxDir(buf: []u8, home: []const u8) []const u8 {
+/// Absolute webhook config path into `buf`.
+pub fn configPath(buf: []u8, home: []const u8) []const u8 {
     if (home.len == 0) return "";
-    return std.fmt.bufPrint(buf, "{s}/Library/Application Support/Nanolight/outbox", .{home}) catch "";
+    return std.fmt.bufPrint(buf, "{s}/Library/Application Support/Nanolight/pm-webhook.json", .{home}) catch "";
 }
 
-/// Writes `body` as UTF-8 into a new `pm-<unix>-<pid>.txt`. Returns the path
-/// length written into `path_buf`, or 0 on failure / empty body.
-pub fn writeOutbox(io: std.Io, home: []const u8, body_in: []const u8, path_buf: []u8) usize {
+/// POST `body_in` to the project-manager webhook. Returns true on HTTP 2xx.
+pub fn postWebhook(gpa: std.mem.Allocator, io: std.Io, home: []const u8, body_in: []const u8) bool {
     const body = std.mem.trim(u8, body_in, " \t\r\n");
-    if (home.len == 0 or body.len == 0 or body.len > max_body) return 0;
-    var dir_buf: [512]u8 = undefined;
-    const dir = outboxDir(&dir_buf, home);
-    if (dir.len == 0) return 0;
-    std.Io.Dir.cwd().createDirPath(io, dir) catch return 0;
-    const now = time(null);
-    const pid: u32 = @intCast(std.c.getpid());
-    const path = std.fmt.bufPrint(path_buf, "{s}/pm-{d}-{d}.txt", .{ dir, now, pid }) catch return 0;
-    var f = std.Io.Dir.createFileAbsolute(io, path, .{}) catch return 0;
-    defer f.close(io);
-    f.writeStreamingAll(io, body) catch return 0;
-    f.writeStreamingAll(io, "\n") catch {};
-    return path.len;
+    if (home.len == 0 or body.len == 0 or body.len > max_body) return false;
+
+    var path_buf: [512]u8 = undefined;
+    const path = configPath(&path_buf, home);
+    if (path.len == 0) return false;
+
+    const raw = std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(8 * 1024)) catch return false;
+    defer gpa.free(raw);
+
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    const Config = struct { url: []const u8, key: []const u8 };
+    const cfg = std.json.parseFromSliceLeaky(Config, arena.allocator(), raw, .{ .ignore_unknown_fields = true }) catch return false;
+    if (cfg.url.len == 0 or !std.mem.startsWith(u8, cfg.url, "https://")) return false;
+    if (cfg.key.len == 0) return false;
+
+    const key = stripCrLf(cfg.key);
+    if (key.len == 0) return false;
+
+    const auth = if (std.mem.startsWith(u8, key, "Bearer "))
+        key
+    else
+        std.fmt.allocPrint(arena.allocator(), "Bearer {s}", .{key}) catch return false;
+
+    const Payload = struct { text: []const u8 };
+    const json = std.json.Stringify.valueAlloc(gpa, Payload{ .text = body }, .{}) catch return false;
+    defer gpa.free(json);
+
+    const auth_header = std.fmt.allocPrint(gpa, "Authorization: {s}", .{auth}) catch return false;
+    defer gpa.free(auth_header);
+
+    const argv = [_][]const u8{
+        "/usr/bin/curl",
+        "-sS",
+        "-o",
+        "/dev/null",
+        "-w",
+        "%{http_code}",
+        "-X",
+        "POST",
+        cfg.url,
+        "-H",
+        auth_header,
+        "-H",
+        "Content-Type: application/json",
+        "--data-binary",
+        json,
+    };
+    const result = std.process.run(gpa, io, .{
+        .argv = &argv,
+        .stdout_limit = .limited(64),
+        .stderr_limit = .limited(1024),
+        .create_no_window = true,
+    }) catch return false;
+    defer gpa.free(result.stdout);
+    defer gpa.free(result.stderr);
+
+    const code_s = std.mem.trim(u8, result.stdout, " \t\r\n");
+    const code = std.fmt.parseInt(u16, code_s, 10) catch return false;
+    return code >= 200 and code < 300;
 }
 
 /// Optional macOS banner; failures are ignored.
-pub fn notify(gpa: std.mem.Allocator, io: std.Io) void {
-    const script =
-        \\display notification "已写入 outbox，等待转发" with title "发给项目经理"
+pub fn notify(gpa: std.mem.Allocator, io: std.Io, ok: bool) void {
+    const script = if (ok)
+        \\display notification "已发送" with title "发给项目经理"
+    else
+        \\display notification "发送失败" with title "发给项目经理"
     ;
     const argv = [_][]const u8{ "/usr/bin/osascript", "-e", script };
     const result = std.process.run(gpa, io, .{
@@ -58,6 +103,10 @@ pub fn notify(gpa: std.mem.Allocator, io: std.Io) void {
     }) catch return;
     gpa.free(result.stdout);
     gpa.free(result.stderr);
+}
+
+fn stripCrLf(s: []const u8) []const u8 {
+    return std.mem.trim(u8, s, " \t\r\n");
 }
 
 fn startsIgnoreCase(hay: []const u8, needle: []const u8) bool {
@@ -79,10 +128,10 @@ test "pm prefixes" {
     try t.expect(take("p m hi") == null);
 }
 
-test "outbox dir under Application Support" {
+test "config path under Application Support" {
     var buf: [256]u8 = undefined;
     try std.testing.expectEqualStrings(
-        "/Users/chris/Library/Application Support/Nanolight/outbox",
-        outboxDir(&buf, "/Users/chris"),
+        "/Users/chris/Library/Application Support/Nanolight/pm-webhook.json",
+        configPath(&buf, "/Users/chris"),
     );
 }

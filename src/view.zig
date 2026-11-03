@@ -36,7 +36,7 @@ pub const Host = struct {
     restart: ?*const fn (ctx: *anyopaque) void = null,
     /// Quit Nanolight (`quit`).
     quit: ?*const fn (ctx: *anyopaque) void = null,
-    /// Write a PM note to the local outbox (`pm ` / `PM `).
+    /// POST a PM note to the 项目经理 webhook (`pm ` / `PM `).
     pm: ?*const fn (ctx: *anyopaque, body: []const u8) void = null,
 };
 

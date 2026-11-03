@@ -19,7 +19,7 @@ Apps, math, and Ask Codex: one keystroke away. Native Zig, no Electron, about 1 
 - **⌘1–⌘9** run a row at once; ↑ ↓ and ⌃N ⌃P move.
 - Lives in the menu bar: no Dock icon, and nothing drawn while it's idle.
 - **Restart or quit from the panel**: type `reload` / `restart` / `re`…, Chinese `重启` / `重载`, or `quit` / `退出` / `关掉`, then Return.
-- **Message the project manager**: type `pm ` (or `PM `) plus a note, then Return. Nanolight writes UTF-8 to `~/Library/Application Support/Nanolight/outbox/pm-*.txt` for a Grok Bot routine to forward; it does not talk to the bot itself.
+- **Message the project manager**: type `pm ` (or `PM `) plus a note, then Return. Nanolight POSTs to Chris's 项目经理 Grok Bot webhook; URL/key live in Application Support `pm-webhook.json` (not in the repo).
 
 ## Sync across Macs (optional)
 
@@ -73,7 +73,7 @@ VERSION=0.1.0 sh macos/package.sh   # the release: signed app, disk image, updat
 | `src/pic.zig` | Picemon image search over its SQLite index |
 | `src/file.zig` | FSearch whole-disk file search (`f ` / `find ` / `file `) |
 | `src/ai.zig` | One-shot Codex Q&A (`ai ` / `ask `) |
-| `src/pm.zig` | Project-manager outbox (`pm ` / `PM `) |
+| `src/pm.zig` | Project-manager webhook (`pm ` / `PM `) |
 | `src/preview.zig` | The results page in the panel (WKWebView) |
 | `src/onboard.zig`, `src/shortcut.zig` | The welcome, and which key is free |
 | `src/film.zig`, `src/stage.zig`, `tools/film.sh` | The walkthrough, rendered offscreen |

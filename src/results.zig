@@ -13,7 +13,7 @@ pub const Kind = enum {
     restart,
     /// Quit Nanolight (`quit`).
     quit,
-    /// Send a note to the project manager via the local outbox (`pm `).
+    /// Send a note to the project manager via webhook (`pm `).
     pm,
     calc,
     app,
