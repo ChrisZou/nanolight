@@ -1,8 +1,9 @@
 //! The panel's window on Windows and Linux: borderless, over other windows,
 //! out of the taskbar, exactly the panel's size (it follows the panel's
 //! height). nanoui draws the panel on it; there is no system vibrancy
-//! under it, so the panel paints its own fill. Windows 11 rounds its
-//! corners and gives it the system's shadow.
+//! under it, so the panel paints its own fill. The window is transparent
+//! (nanoui's `transparent`): only the rounded panel shows, nothing square
+//! behind its corners.
 const std = @import("std");
 const builtin = @import("builtin");
 const nanoui = @import("nanoui");
@@ -15,11 +16,12 @@ pub fn adjust(o: *nanoui.WindowOptions, _: bool, h: f32) void {
     o.decorations = false;
     o.skip_taskbar = true;
     o.always_on_top = true;
+    o.transparent = true;
 }
 
 pub fn setup(_: *nanoui.App, w: *nanoui.Window, s: *view.Nanolight, _: f32) void {
     s.margin = 0;
-    if (windows) return roundCorners(w);
+    if (windows) return;
     // X11: the window manager says which window is active (GTK can't
     // while the hot key's grab holds the keyboard), and when another one
     // becomes it, the panel goes, as the Mac's popover does.
@@ -91,14 +93,4 @@ pub fn shown(w: *nanoui.Window) void {
     const f = std.c.dlsym(lib, "gtk_window_present_with_time") orelse return;
     const present: *const fn (*anyopaque, u32) callconv(.c) void = @ptrCast(@alignCast(f));
     present(@ptrCast(win), t);
-}
-
-extern "dwmapi" fn DwmSetWindowAttribute(hwnd: *anyopaque, attr: u32, value: *const anyopaque, size: u32) callconv(.winapi) i32;
-
-fn roundCorners(w: *nanoui.Window) void {
-    if (!windows) return;
-    const h = w.hwnd orelse return;
-    // DWMWA_WINDOW_CORNER_PREFERENCE: DWMWCP_ROUND (Windows 11; ignored before).
-    const round: u32 = 2;
-    _ = DwmSetWindowAttribute(@ptrCast(h), 33, &round, 4);
 }
