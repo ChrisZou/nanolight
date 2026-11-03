@@ -105,10 +105,29 @@ fn redraw(ctx: *anyopaque) void {
 /// The apps and installed commands found again, their counts kept.
 pub fn rescan(ctx: *anyopaque) void {
     const l = live(ctx);
-    const ix = l.s.index;
     const env = l.env orelse return;
+    const ix = l.s.index;
     ix.deinit();
     ix.* = .init(l.app.gpa);
+    fill(l, ix, env);
+    changed(l);
+}
+
+/// As the panel opens: an app installed or removed since Nanolight started
+/// is found (#15; after omerdikyol's #4). A look at a few folders; when it
+/// finds what the index has, the index stays, its icons with it.
+pub fn refresh(ctx: *anyopaque) void {
+    const l = live(ctx);
+    const env = l.env orelse return;
+    var fresh: apps.Index = .init(l.app.gpa);
+    fill(l, &fresh, env);
+    if (l.s.index.same(&fresh)) return fresh.deinit();
+    l.s.index.deinit();
+    l.s.index.* = fresh;
+    changed(l);
+}
+
+fn fill(l: *Live, ix: *apps.Index, env: *const std.process.Environ.Map) void {
     apps.scanSystem(ix, l.app.io, env);
     // TypeScript extensions only where Node is (the user's own; none is
     // shipped); script commands everywhere.
@@ -116,6 +135,11 @@ pub fn rescan(ctx: *anyopaque) void {
     sc.scan(ix, l.app.gpa);
     ix.sort();
     ix.load(l.kv);
+}
+
+/// The rows again at once: theirs are places in the old index.
+fn changed(l: *Live) void {
     l.s.built = 1;
+    l.s.rebuild();
     redraw(l);
 }

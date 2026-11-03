@@ -136,6 +136,16 @@ pub const Index = struct {
         for (ix.apps.items, 0..) |a, i| ix.names.items[i] = a.name;
     }
 
+    /// Whether `other` lists the same apps and commands, at the same
+    /// paths: a rescan that found nothing new (raycast_live.zig `refresh`).
+    pub fn same(ix: *const Index, other: *const Index) bool {
+        if (ix.apps.items.len != other.apps.items.len) return false;
+        for (ix.apps.items, other.apps.items) |a, b| {
+            if (!std.mem.eql(u8, a.path, b.path) or !std.mem.eql(u8, a.name, b.name)) return false;
+        }
+        return true;
+    }
+
     pub fn find(ix: *const Index, name: []const u8) ?u32 {
         for (ix.names.items, 0..) |n, i| if (std.ascii.eqlIgnoreCase(n, name)) return @intCast(i);
         return null;
@@ -270,4 +280,27 @@ test "names are kept once, sorted, and opening one suggests it" {
     ix.launches.items[0] = 0;
     ix.load(mem.store());
     try t.expectEqual(@as(u16, 2), ix.launches.items[0]);
+}
+
+test "a second look tells an app installed since from no change (#15)" {
+    const t = std.testing;
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(t.io, "Applications/Alpha.app");
+    var buf: [128]u8 = undefined;
+    const home = try std.fmt.bufPrint(&buf, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    var ix: Index = .init(t.allocator);
+    defer ix.deinit();
+    ix.scan(t.io, home);
+    var again: Index = .init(t.allocator);
+    defer again.deinit();
+    again.scan(t.io, home);
+    try t.expect(ix.same(&again));
+    // DOSBox-X, installed while Nanolight ran.
+    try tmp.dir.createDirPath(t.io, "Applications/DOSBox-X.app");
+    var later: Index = .init(t.allocator);
+    defer later.deinit();
+    later.scan(t.io, home);
+    try t.expect(!ix.same(&later));
+    try t.expect(later.find("DOSBox-X") != null);
 }

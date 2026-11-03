@@ -349,6 +349,7 @@ pub const Live = struct {
         // Freed a key in System Settings, quit a launcher: look again.
         if (l.o.active) l.o.refresh();
         panel.place(w);
+        rc.refresh(l);
         l.s.reveal();
         w.show();
         panel.shown(w);
