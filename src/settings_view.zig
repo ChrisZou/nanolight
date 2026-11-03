@@ -1,5 +1,6 @@
-//! Settings, in the panel itself: the shortcut, Google's suggestions,
-//! opening at login, syncing across Macs, updates. The same glass, the
+//! Settings, in the panel itself: the shortcut, Google's suggestions and
+//! where searches open, opening at login, the menu bar icon, syncing
+//! across Macs, updates. The same glass, the
 //! same rows. Esc goes back to search; ↑/↓ move, Return and Space do the
 //! row. The shortcut is one of four, or any key recorded with ⌘, ⌥ or ⌃
 //! (the last chip). Without a host (tests, the film) it still draws, and changes
@@ -15,10 +16,11 @@ const Choice = shortcut.Choice;
 const Palette = panel.Palette;
 const mac = @import("builtin").os.tag == .macos;
 
-const RowKind = enum { choice, suggest, login, sync, terms, updates, welcome, quit };
+const RowKind = enum { choice, suggest, browser, login, menu_bar, sync, terms, updates, welcome, quit };
 
-/// As tall as its sections, never past the window.
-pub const height: f32 = 560;
+/// As tall as its sections, never past the window. The Mac has two rows
+/// more: where searches open, and the menu bar icon.
+pub const height: f32 = 560 + if (mac) 2 * 46 else 0;
 
 pub const Settings = struct {
     open: bool = false,
@@ -33,7 +35,10 @@ pub const Settings = struct {
     recording: bool = false,
     refused: bool = false,
     suggest: bool = true,
+    /// Return sends searches to the browser (`Nanolight.searches_out`).
+    browser: bool = false,
     login: bool = false,
+    menu_bar: bool = true,
     account: account.State = .signed_out,
     email: []const u8 = "",
     version: []const u8 = "0.1.0",
@@ -57,7 +62,9 @@ pub const Settings = struct {
 
     fn pull(s: *Settings, n: *panel.Nanolight) void {
         s.suggest = n.suggest_on;
+        s.browser = n.searches_out;
         const h = s.hooks(n) orelse return;
+        s.menu_bar = h.menu_bar(h.ctx, null);
         s.choice = h.choice(h.ctx);
         if (s.choice.preset() == null) s.custom = s.choice;
         s.login = h.login(h.ctx, null);
@@ -97,8 +104,10 @@ pub const Settings = struct {
         s.choices(c, n, p);
         label(c, p, "Search");
         s.switchRow(c, n, p, rows, .suggest, "Google Suggestions");
+        if (mac) s.switchRow(c, n, p, rows, .browser, "Open Searches in Browser");
         label(c, p, "This " ++ @import("results.zig").machine);
         s.switchRow(c, n, p, rows, .login, "Open at Login");
+        if (mac) s.switchRow(c, n, p, rows, .menu_bar, "Show in Menu Bar");
         label(c, p, if (@import("builtin").os.tag == .macos) "Sync Across Macs" else "Sync Across Computers");
         s.sync(c, n, p, rows);
         label(c, p, "Updates");
@@ -175,7 +184,9 @@ pub const Settings = struct {
         ui.spacer(c);
         mark(c, p, switch (kind) {
             .suggest => s.suggest,
+            .browser => s.browser,
             .login => s.login,
+            .menu_bar => s.menu_bar,
             else => false,
         });
     }
@@ -201,9 +212,18 @@ pub const Settings = struct {
                 n.built = 1;
                 if (h) |host| host.suggest(host.ctx, s.suggest);
             },
+            .browser => {
+                n.searches_out = !n.searches_out;
+                s.browser = n.searches_out;
+                if (h) |host| host.searches_out(host.ctx, s.browser);
+            },
             .login => {
                 const next = !s.login;
                 s.login = if (h) |host| host.login(host.ctx, next) else next;
+            },
+            .menu_bar => {
+                const next = !s.menu_bar;
+                s.menu_bar = if (h) |host| host.menu_bar(host.ctx, next) else next;
             },
             else => {},
         }
@@ -320,7 +340,7 @@ pub const Settings = struct {
         switch (kind) {
             // ←/→ step through the four; Return records one's own.
             .choice => if (mac) s.record(n, !s.recording) else s.nudge(n, rowList(s.account), 1),
-            .suggest, .login => s.flip(n, kind),
+            .suggest, .browser, .login, .menu_bar => s.flip(n, kind),
             .sync => if (h) |host| switch (s.account) {
                 .signed_out => host.sign_in(host.ctx),
                 .waiting, .signed_in => host.sign_out(host.ctx),
@@ -341,8 +361,8 @@ pub const Settings = struct {
 
 fn rowList(state: account.State) []const RowKind {
     return switch (state) {
-        .signed_out, .starting => &.{ .choice, .suggest, .login, .sync, .terms, .updates, .welcome, .quit },
-        .waiting, .signed_in => &.{ .choice, .suggest, .login, .sync, .updates, .welcome, .quit },
+        .signed_out, .starting => if (mac) &.{ .choice, .suggest, .browser, .login, .menu_bar, .sync, .terms, .updates, .welcome, .quit } else &.{ .choice, .suggest, .login, .sync, .terms, .updates, .welcome, .quit },
+        .waiting, .signed_in => if (mac) &.{ .choice, .suggest, .browser, .login, .menu_bar, .sync, .updates, .welcome, .quit } else &.{ .choice, .suggest, .login, .sync, .updates, .welcome, .quit },
     };
 }
 

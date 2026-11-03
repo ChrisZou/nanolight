@@ -63,27 +63,8 @@ pub fn webArea(h: f32) struct { y: f32, h: f32 } {
 pub const spring: motion.Spring = .{ .stiffness = 320, .damping = 32 };
 const slide: motion.Spring = .{ .stiffness = 700, .damping = 52 };
 
-pub const Palette = struct { text: ui.Color, sub: ui.Color, hair: ui.Color, sel: ui.Color, rim: ui.Color, tile: ui.Color, fill: ui.Color };
-
-pub fn palette(dark: bool) Palette {
-    return if (dark) .{
-        .text = .hex(0xeeeeee),
-        .sub = .hex(0xb5b5b5),
-        .hair = ui.Color.white.alpha(0.12),
-        .sel = ui.Color.white.alpha(0.16),
-        .rim = ui.Color.white.alpha(0.1),
-        .tile = ui.Color.white.alpha(0.09),
-        .fill = ui.Color.hex(0x1a1a1a).alpha(0.5),
-    } else .{
-        .text = .hex(0x292929),
-        .sub = .hex(0x6f6f6f),
-        .hair = ui.Color.black.alpha(0.09),
-        .sel = ui.Color.black.alpha(0.08),
-        .rim = ui.Color.black.alpha(0.05),
-        .tile = ui.Color.black.alpha(0.05),
-        .fill = ui.Color.white.alpha(0.45),
-    };
-}
+pub const Palette = @import("palette.zig").Palette;
+pub const palette = @import("palette.zig").palette;
 
 pub const Nanolight = struct {
     index: *Index,
@@ -98,6 +79,12 @@ pub const Nanolight = struct {
     own_glass: bool = false,
     /// Clear room round the panel in its window, for its shadow.
     margin: f32 = 0,
+    /// The window fades in as it shows, the system's glass with it
+    /// (panel_mac.zig): the panel has no entrance of its own (issue #9).
+    window_fades: bool = false,
+    /// Return sends a Google search to the browser and ⌘↩ shows it in
+    /// the panel, the other way round from the default (issue #10).
+    searches_out: bool = false,
     /// Each showing gets a new one: the panel comes in again.
     shown: u32 = 0,
     copied_at: f64 = -10,
@@ -154,7 +141,8 @@ pub const Nanolight = struct {
     /// The window's view: the panel, `margin` in from the window's edges.
     pub fn view(s: *Nanolight, c: *ui.Context) void {
         ui.key(c, c.print("panel-{d}", .{s.shown}));
-        const f = motion.frame(c, .{ .initial = .{ .opacity = 0, .y = -6, .scale = 0.985 }, .transition = .{ .spring = spring } });
+        const entrance: motion.Target = .{ .opacity = 0, .y = -6, .scale = 0.985 };
+        const f = motion.frame(c, .{ .initial = if (s.window_fades) null else entrance, .transition = .{ .spring = spring } });
         const root = ui.div(c).wFull().p(s.margin).motion(f);
         defer root.end();
         s.panel(c);
@@ -541,32 +529,33 @@ pub const Nanolight = struct {
                 s.go(s.index.apps.items[r.app].path);
             },
             .ask_grok, .search_x => s.go(results.url(&s.url_buf, r.kind, s.query.text())),
-            .search_web => s.search(s.query.text()),
+            .search_web => s.search(s.query.text(), !s.searches_out),
             .settings => s.openSettings(),
             .suggest => {
                 // Its words fill the field, as a search box's would.
                 s.query.set(s.web.get(r.web));
-                s.search(s.query.text());
+                s.search(s.query.text(), !s.searches_out);
             },
         }
     }
 
-    /// ⌘↩ on the selected row: a search opens in the browser.
+    /// ⌘↩ on the selected row: a search goes where Return doesn't send it.
     fn activateOut(s: *Nanolight, c: *ui.Context) void {
         if (s.res.n == 0) return;
         const r = s.res.rows[@min(s.sel, s.res.n - 1)];
         switch (r.kind) {
-            .search_web => s.go(results.url(&s.url_buf, .search_web, s.query.text())),
-            .suggest => s.go(results.url(&s.url_buf, .search_web, s.web.get(r.web))),
+            .search_web => s.search(s.query.text(), s.searches_out),
+            .suggest => s.search(s.web.get(r.web), s.searches_out),
             else => s.activate(c),
         }
     }
 
-    /// Google's page for `words`, in the panel if the host can show it.
-    fn search(s: *Nanolight, words: []const u8) void {
+    /// Google's page for `words`: in the panel when `in_panel` and the host
+    /// can show it there, else in the browser.
+    fn search(s: *Nanolight, words: []const u8, in_panel: bool) void {
         const h = s.host orelse return;
         const u = results.url(&s.preview_buf, .search_web, words);
-        const show = h.preview orelse return s.go(u);
+        const show = (if (in_panel) h.preview else null) orelse return s.go(u);
         s.preview_url = u;
         s.previewing = true;
         s.preview_q = std.hash.Wyhash.hash(0, s.query.text());

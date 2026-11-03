@@ -21,6 +21,7 @@ test {
     _ = @import("script_commands.zig");
     _ = @import("script_run.zig");
     _ = @import("tests_ext.zig");
+    _ = @import("tests_prefs.zig");
     switch (@import("builtin").os.tag) {
         .macos => {
             _ = @import("single_mac.zig");
@@ -39,7 +40,7 @@ test {
     }
 }
 
-const Probe = struct {
+pub const Probe = struct {
     opened: [256]u8 = undefined,
     opened_len: usize = 0,
     hidden: bool = false,
@@ -58,7 +59,7 @@ const Probe = struct {
 /// The Mac's starters, which these tests' apps are named after.
 const mac_starters = [_][]const u8{ "Safari", "Notes", "Calendar", "System Settings", "Finder" };
 
-fn press(t: *ui.Tester, ops: []const ui.TextOp) void {
+pub fn press(t: *ui.Tester, ops: []const ui.TextOp) void {
     t.textOps(ops);
     t.settle(1);
 }
@@ -145,14 +146,14 @@ const suggest = @import("suggest.zig");
 const results = @import("results.zig");
 
 /// A host that answers for Google and shows pages: what was asked, shown.
-const Web = struct {
+pub const Web = struct {
     probe: Probe = .{},
     asked: [64]u8 = undefined,
     asked_len: usize = 0,
     page: [256]u8 = undefined,
     page_len: ?usize = null,
 
-    fn host(w: *Web) view.Host {
+    pub fn host(w: *Web) view.Host {
         return .{ .ctx = w, .open = open, .hide = hide, .suggest = ask, .preview = show };
     }
     fn open(ctx: *anyopaque, target: []const u8) void {
@@ -348,16 +349,18 @@ test "the welcome: a key, pressed for real, then a first search" {
 const SettingsHost = @import("settings_host.zig").SettingsHost;
 
 /// A host that records what Settings asked it to do.
-const Prefs = struct {
+pub const Prefs = struct {
     probe: Probe = .{},
     key: shortcut.Choice = .cmd_space,
     applied: ?shortcut.Choice = null,
     recording: bool = false,
     login_on: bool = false,
     suggest_sets: u8 = 0,
+    searches_out: ?bool = null,
+    menu_bar_on: bool = true,
     box: SettingsHost = undefined,
 
-    fn init(p: *Prefs) void {
+    pub fn init(p: *Prefs) void {
         p.box = .{
             .ctx = p,
             .choice = choice,
@@ -365,6 +368,8 @@ const Prefs = struct {
             .record = record,
             .login = login,
             .suggest = suggestSet,
+            .searches_out = searchesOut,
+            .menu_bar = menuBar,
             .account = acct,
             .email = email,
             .sign_in = noop,
@@ -378,7 +383,7 @@ const Prefs = struct {
             .quit = noop,
         };
     }
-    fn host(p: *Prefs) view.Host {
+    pub fn host(p: *Prefs) view.Host {
         return .{ .ctx = p, .open = open, .hide = hide, .settings = &p.box };
     }
     fn open(ctx: *anyopaque, target: []const u8) void {
@@ -405,6 +410,14 @@ const Prefs = struct {
     }
     fn suggestSet(ctx: *anyopaque, _: bool) void {
         @as(*Prefs, @ptrCast(@alignCast(ctx))).suggest_sets += 1;
+    }
+    fn searchesOut(ctx: *anyopaque, on: bool) void {
+        @as(*Prefs, @ptrCast(@alignCast(ctx))).searches_out = on;
+    }
+    fn menuBar(ctx: *anyopaque, set: ?bool) bool {
+        const p: *Prefs = @ptrCast(@alignCast(ctx));
+        if (set) |on| p.menu_bar_on = on;
+        return p.menu_bar_on;
     }
     fn acct(_: *anyopaque) @import("account.zig").State {
         return .signed_out;

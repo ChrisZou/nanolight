@@ -23,6 +23,7 @@ pub fn setup(app: *nanoui.App, w: *nanoui.Window, s: *view.Nanolight, h: f32) vo
     // The panel's own shadow, not the system's: a shadowed window in dark
     // mode gets a hard black outline round its pixels.
     s.margin = view.shadow_margin;
+    s.window_fades = true;
     objc.msg(void, w.nswindow, "setHasShadow:", .{objc.NO});
     glass = backdrop(w, 18, h);
 }
@@ -37,6 +38,9 @@ pub fn place(w: *nanoui.Window) void {
     const top = ph - (f.origin.y + f.size.height);
     // The panel there; the window is the shadow's margin bigger.
     w.setPosition(f.origin.x + (f.size.width - view.width) / 2 - view.shadow_margin, top + f.size.height * 0.2 - view.shadow_margin);
+    // Unseen as it orders in: it still holds the frame it hid with, until
+    // the next one is drawn (issue #9). `shown` fades it in.
+    objc.msg(void, w.nswindow, "setAlphaValue:", .{@as(f64, 0)});
 }
 
 /// The glass to the panel's height, in the frame that draws it (a view's
@@ -51,8 +55,30 @@ pub fn focused(w: *nanoui.Window) bool {
     return w.isFocused();
 }
 
-/// After `show`: nothing more on the Mac.
-pub fn shown(_: *nanoui.Window) void {}
+/// After `show`: the window fades in, the system's glass and the panel
+/// together. The panel's entrance couldn't be drawn over that glass (it
+/// is the system's, at full strength at once), so the window has it; the
+/// fade also hides the frame left from the last showing while the panel
+/// draws its new one.
+pub fn shown(w: *nanoui.Window) void {
+    const pool = objc.Pool.push();
+    defer pool.pop();
+    const cls = objc.class("NSAnimationContext");
+    objc.msg(void, cls, "beginGrouping", .{});
+    objc.msg(void, objc.msg(objc.Object, cls, "currentContext", .{}), "setDuration:", .{fade_s});
+    objc.msg(void, objc.msg(objc.Object, w.nswindow, "animator", .{}), "setAlphaValue:", .{@as(f64, 1)});
+    objc.msg(void, cls, "endGrouping", .{});
+    // Whole once the fade is over, whatever became of it: a launcher
+    // left see-through would be worse than one that didn't fade.
+    nanoui.App.after(@intFromFloat(fade_s * 1000 + 80), w, struct {
+        fn f(ctx: ?*anyopaque) callconv(.c) void {
+            const win: *nanoui.Window = @ptrCast(@alignCast(ctx.?));
+            if (win.isVisible()) objc.msg(void, win.nswindow, "setAlphaValue:", .{@as(f64, 1)});
+        }
+    }.f);
+}
+
+const fade_s: f64 = 0.12;
 
 /// Puts the system's vibrancy under the panel (NSVisualEffectView, as
 /// launchers use), `height` tall, the shadow's margin in. Not

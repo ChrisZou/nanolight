@@ -11,6 +11,8 @@ pub var box: SettingsHost = .{
     .record = @import("main.zig").recordKey,
     .login = @import("main.zig").loginItem,
     .suggest = suggest,
+    .searches_out = searchesOut,
+    .menu_bar = menuBar,
     .account = acct,
     .email = email,
     .sign_in = signIn,
@@ -38,6 +40,14 @@ fn suggest(ctx: *anyopaque, on: bool) void {
     var item: nanoui.menu.Item = undefined;
     item.checked = on;
     l(ctx).toggleSuggest(&item);
+}
+
+fn searchesOut(ctx: *anyopaque, on: bool) void {
+    l(ctx).setSearchesOut(on);
+}
+
+fn menuBar(ctx: *anyopaque, set: ?bool) bool {
+    return l(ctx).menuBar(set);
 }
 
 fn acct(ctx: *anyopaque) account.State {

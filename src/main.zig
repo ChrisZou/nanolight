@@ -35,6 +35,10 @@ const rc = @import("raycast_live.zig");
 const Settings = @import("settings.zig").Settings;
 
 const suggest_key = "nanolight.suggest";
+/// "1": Return opens searches in the browser (issue #10).
+const searches_out_key = "nanolight.searches_out";
+/// "0": no menu bar icon (issue #8).
+const menu_bar_key = "nanolight.menu_bar";
 
 pub fn applyChoice(ctx: *anyopaque, choice: shortcut.Choice) void {
     Live.apply(ctx, choice);
@@ -246,6 +250,26 @@ pub const Live = struct {
         // The rows again, with or without them.
         l.s.built = 1;
         if (l.window) |w| w.redraw();
+    }
+
+    pub fn setSearchesOut(l: *Live, on: bool) void {
+        l.s.searches_out = on;
+        l.kv.set(searches_out_key, if (on) "1" else "0") catch {};
+    }
+
+    /// Whether the menu bar icon shows; `set` shows or hides it. Hidden,
+    /// Nanolight is its key alone: Settings stays in the panel (⌘,), and
+    /// opening the app again shows the panel. The status item stays, only
+    /// unseen (nanoui's App keeps its trays until it quits).
+    pub fn menuBar(l: *Live, set: ?bool) bool {
+        if (comptime !mac) return false;
+        const objc = nanoui.objc;
+        const t = l.tray orelse return false;
+        if (set) |on| {
+            l.kv.set(menu_bar_key, if (on) "1" else "0") catch {};
+            objc.msg(void, t.item, "setVisible:", .{if (on) objc.YES else objc.NO});
+        }
+        return objc.msg(objc.BOOL, t.item, "isVisible", .{});
     }
 
     /// The menu bar icon's menu, with the update waiting, if one is.
@@ -499,6 +523,10 @@ pub fn main(init: std.process.Init) !void {
         defer init.gpa.free(v);
         s.suggest_on = !std.mem.eql(u8, v, "0");
     }
+    if (kv.get(init.gpa, searches_out_key) catch null) |v| {
+        defer init.gpa.free(v);
+        s.searches_out = std.mem.eql(u8, v, "1");
+    }
     s.reveal();
     // The rows first, so a snapshot is as tall as the panel.
     s.rebuild();
@@ -527,6 +555,11 @@ pub fn main(init: std.process.Init) !void {
     // The first run: the welcome, in the panel.
     if (!shortcut.onboarded(kv)) o.start(live.choice);
     if (mac) live.tray = try app.newTray(.{ .symbol = "magnifyingglass", .tooltip = "Nanolight" });
+    // The menu bar icon, unless Settings took it away.
+    if (kv.get(init.gpa, menu_bar_key) catch null) |v| {
+        defer init.gpa.free(v);
+        if (std.mem.eql(u8, v, "0")) _ = live.menuBar(false);
+    }
     // A release build checks its GitHub releases; one run from zig-out
     // can't replace itself, and leaves the item off.
     const updater = nanoui.Updater.start(init, .{

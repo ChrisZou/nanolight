@@ -16,6 +16,10 @@ pub const SettingsHost = struct {
     login: *const fn (ctx: *anyopaque, set: ?bool) bool,
     /// Google's suggestions turned on or off in Settings.
     suggest: *const fn (ctx: *anyopaque, on: bool) void,
+    /// Return sends Google searches to the browser (on) or the panel.
+    searches_out: *const fn (ctx: *anyopaque, on: bool) void,
+    /// Whether the menu bar icon shows; `set` changes it first.
+    menu_bar: *const fn (ctx: *anyopaque, set: ?bool) bool,
     account: *const fn (ctx: *anyopaque) account.State,
     email: *const fn (ctx: *anyopaque) []const u8,
     sign_in: *const fn (ctx: *anyopaque) void,
