@@ -86,8 +86,18 @@ jobs:
           codesign --verify --strict --verbose=2 zig-out/package/Nanolight.app
           hdiutil verify zig-out/package/nanolight-macos-arm64.dmg
           if [ -n "${NOTARY_KEY_PATH:-}" ]; then
-            xcrun stapler validate zig-out/package/Nanolight.app
-            xcrun stapler validate zig-out/package/nanolight-macos-arm64.dmg
+            # Validating asks Apple's CloudKit too, which drops the
+            # connection now and then (error 68): a few tries, as stapling.
+            validate() {
+              for try in 1 2 3 4 5; do
+                xcrun stapler validate "$1" && return 0
+                echo "validating $1 failed (try $try); retrying" >&2
+                sleep $((try * 10))
+              done
+              return 1
+            }
+            validate zig-out/package/Nanolight.app
+            validate zig-out/package/nanolight-macos-arm64.dmg
           fi
 
       - uses: actions/upload-artifact@v4
