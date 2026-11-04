@@ -19,7 +19,7 @@ pub fn build(b: *std.Build) void {
     const nanoui = b.dependency("nanoui", .{ .target = target, .optimize = optimize }).module("nanoui");
     const version = b.option([]const u8, "version", "Nanolight's version, as the app shows it (release builds)") orelse "0.1.0";
     // Integer build shown next to the version in the footer; bump on every shipped fix.
-    const build_num = b.option(u32, "build", "Integer build number shown next to the version") orelse 8;
+    const build_num = b.option(u32, "build", "Integer build number shown next to the version") orelse 9;
     const opts = b.addOptions();
     opts.addOption([]const u8, "version", version);
     opts.addOption(u32, "build", build_num);
@@ -63,7 +63,19 @@ pub fn build(b: *std.Build) void {
 
     // zig-out/Nanolight.app: the program with its icon, for /Applications.
     if (os == .macos) {
-        const app = b.addInstallDirectory(.{ .source_dir = bundle(b, exe, version, build_num), .install_dir = .prefix, .install_subdir = "Nanolight.app" });
+        // Signed with a real identity, macOS remembers the Accessibility grant
+        // across builds; an ad-hoc signature is a new app to it every build.
+        // -Dsign picks the identity; by default, the first Developer ID or
+        // Apple Development identity in the keychain, else ad hoc.
+        const sign = b.addSystemCommand(&.{ "/bin/sh", "-c",
+            \\id="$1"
+            \\[ -n "$id" ] || id=$(security find-identity -v -p codesigning | grep -m1 -E '"(Developer ID Application|Apple Development):' | awk '{print $2}')
+            \\rm -rf "$3" && cp -R "$2" "$3" || exit 1
+            \\out=$(codesign --force --sign "${id:--}" --identifier dev.nanoui.nanolight "$3" 2>&1) || { echo "$out" >&2; exit 1; }
+            , "sign", b.option([]const u8, "sign", "Code signing identity for Nanolight.app (default: the first Developer ID in the keychain)") orelse "" });
+        sign.addDirectoryArg(bundle(b, exe, version, build_num));
+        const signed = sign.addOutputDirectoryArg("Nanolight.app");
+        const app = b.addInstallDirectory(.{ .source_dir = signed, .install_dir = .prefix, .install_subdir = "Nanolight.app" });
         b.getInstallStep().dependOn(&app.step);
         b.step("app", "Build zig-out/Nanolight.app").dependOn(&app.step);
     }
