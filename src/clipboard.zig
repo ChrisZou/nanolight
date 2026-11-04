@@ -143,9 +143,19 @@ pub const Capture = struct {
         // A lazy pasteboard provider may change the board during a read.
         // Discard the entire snapshot and retry the new count next tick.
         if (objc.msg(objc.NSInteger, pb, "changeCount", .{}) != count or concealed(pb)) return;
-        for (copies.items) |copy| _ = try c.store.add(copy.kind, copy.data, time);
+        const source = frontmost();
+        for (copies.items) |copy| _ = try c.store.addFrom(copy.kind, copy.data, source, time);
     }
 };
+
+/// The bundle path of the app in front, where a copy was just made;
+/// valid until the autorelease pool is popped.
+fn frontmost() []const u8 {
+    const ws = objc.msg(objc.Object, objc.class("NSWorkspace"), "sharedWorkspace", .{});
+    const app = objc.msg(?objc.Object, ws, "frontmostApplication", .{}) orelse return "";
+    const url = objc.msg(?objc.Object, app, "bundleURL", .{}) orelse return "";
+    return objc.fromNSString(objc.msg(?objc.Object, url, "path", .{}));
+}
 
 /// Public NSPasteboard formats only. File URLs use an item, like Maccy;
 /// image bytes aren't transcoded or reduced to their display label.

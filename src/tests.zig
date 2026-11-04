@@ -201,10 +201,12 @@ test "clipboard images and file URLs keep their ids and original paste represent
     defer tester.deinit();
     tester.settle(1);
     try t.expectEqual(png, s.clip.ids[0]);
-    try t.expect(tester.containsText("Image ·"));
+    try t.expect(tester.containsText("Image:"));
+    // The preview says when the selected copy was made.
+    try t.expect(tester.containsText("Copied "));
     tester.theme = ui.Theme.light;
     tester.settle(1);
-    try t.expect(tester.containsText("Image ·"));
+    try t.expect(tester.containsText("Image:"));
     press(&tester, &.{.{ .command = .insert_newline }});
     try t.expectEqual(png, probe.pasted.?);
     try t.expectEqual(@import("clipboard_store.zig").Kind.png, store.get(probe.pasted.?).?.kind);
@@ -775,14 +777,16 @@ fn highlightedClipRow(t: *ui.Tester, n: usize) !usize {
             return @as(i32, p.bytes[i]) + p.bytes[i + 1] + p.bytes[i + 2];
         }
     }.at;
-    // The list starts under the 58 pt field, its rule and 6 pt of padding;
+    // The list starts under the 58 pt field, its rule and its padding;
     // the middle of a row, right of its label, is bar or background only.
     var best: usize = 0;
     var best_d: i32 = -1;
-    const base = lum(px, 600 * scale, 30 * scale);
+    const P = @import("clipboard_panel.zig");
+    const x = (P.list_w - 90) * scale;
+    const base = lum(px, x, 30 * scale);
     for (0..n) |i| {
-        const y = (58 + 1 + 6 + 24 + 48 * @as(f32, @floatFromInt(i))) * scale;
-        const d: i32 = @intCast(@abs(lum(px, 600 * scale, y) - base));
+        const y = (58 + 1 + P.list_pad + P.row_h / 2 + P.row_h * @as(f32, @floatFromInt(i))) * scale;
+        const d: i32 = @intCast(@abs(lum(px, x, y) - base));
         if (d > best_d) {
             best_d = d;
             best = i;

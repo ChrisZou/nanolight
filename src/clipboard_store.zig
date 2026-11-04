@@ -10,6 +10,9 @@ pub const Item = struct {
     kind: Kind,
     pinned: bool = false,
     data: []const u8,
+    /// The app it was copied in: its bundle's path, "" when unknown (a
+    /// copy kept before apps were recorded).
+    source: []const u8 = "",
 
     /// Substring search with ASCII case folding, like search.zig. Other
     /// UTF-8 bytes match exactly; binary image payloads aren't searched.
@@ -31,7 +34,11 @@ pub const Limits = struct {
     max_bytes: usize = 32 << 20,
 };
 
-const magic = "NANOCLIP\x01";
+/// Version 2 adds each item's source app; version 1 files still load.
+const magic = "NANOCLIP\x02";
+const magic_v1 = "NANOCLIP\x01";
+/// The longest source path kept.
+pub const max_source = 1024;
 pub const filename = "history.bin";
 
 pub const Store = struct {
@@ -46,7 +53,7 @@ pub const Store = struct {
     }
 
     pub fn deinit(s: *Store) void {
-        for (s.items.items) |item| s.gpa.free(item.data);
+        for (s.items.items) |item| free(s.gpa, item);
         s.items.deinit(s.gpa);
     }
 
@@ -54,6 +61,11 @@ pub const Store = struct {
     /// nonconsecutive copies get new ids, even when an older item is pinned.
     /// Empty/oversize payloads are ignored, without evicting valid history.
     pub fn add(s: *Store, kind: Kind, data: []const u8, now: i64) !?u64 {
+        return s.addFrom(kind, data, "", now);
+    }
+
+    /// As `add`, the copy made in the app at `source` (a bundle path).
+    pub fn addFrom(s: *Store, kind: Kind, data: []const u8, source: []const u8, now: i64) !?u64 {
         if (data.len == 0 or data.len > s.limits.max_item_bytes or data.len > s.limits.max_bytes or s.limits.max_items == 0) return null;
         _ = s.prune(now);
         if (s.items.items.len > 0) {
@@ -67,8 +79,10 @@ pub const Store = struct {
         if (s.next_id == std.math.maxInt(u64)) return error.IdExhausted;
         const owned = try s.gpa.dupe(u8, data);
         errdefer s.gpa.free(owned);
+        const from = try s.gpa.dupe(u8, if (source.len <= max_source) source else "");
+        errdefer s.gpa.free(from);
         const id = s.next_id;
-        try s.items.insert(s.gpa, 0, .{ .id = id, .copied_at = now, .kind = kind, .data = owned });
+        try s.items.insert(s.gpa, 0, .{ .id = id, .copied_at = now, .kind = kind, .data = owned, .source = from });
         s.next_id += 1;
         s.dirty = true;
         _ = s.prune(now);
@@ -135,13 +149,19 @@ pub const Store = struct {
     }
 
     fn remove(s: *Store, i: usize) void {
-        s.gpa.free(s.items.orderedRemove(i).data);
+        free(s.gpa, s.items.orderedRemove(i));
         s.dirty = true;
+    }
+
+    fn free(gpa: std.mem.Allocator, item: Item) void {
+        gpa.free(item.data);
+        gpa.free(item.source);
     }
 
     // Binary framing keeps image bytes intact without JSON's expansion.
     // All integers are little endian: magic, next id, count; then each
-    // item's id, timestamp, kind, pin, length and payload.
+    // item's id, timestamp, kind, pin, length and payload, then its source
+    // app's path and that path's length (u16) before it.
     pub fn encode(s: *const Store, gpa: std.mem.Allocator) ![]u8 {
         var out: std.ArrayList(u8) = .empty;
         errdefer out.deinit(gpa);
@@ -155,6 +175,8 @@ pub const Store = struct {
             try out.append(gpa, @intFromBool(item.pinned));
             try put(&out, gpa, u32, @intCast(item.data.len));
             try out.appendSlice(gpa, item.data);
+            try put(&out, gpa, u16, @intCast(item.source.len));
+            try out.appendSlice(gpa, item.source);
         }
         return out.toOwnedSlice(gpa);
     }
@@ -163,7 +185,9 @@ pub const Store = struct {
     /// existing history intact. Loading also enforces retention immediately.
     pub fn decode(s: *Store, body: []const u8, now: i64) !void {
         var input: Input = .{ .bytes = body };
-        if (!std.mem.eql(u8, try input.take(magic.len), magic)) return error.InvalidHistory;
+        const head = try input.take(magic.len);
+        const v1 = std.mem.eql(u8, head, magic_v1);
+        if (!v1 and !std.mem.eql(u8, head, magic)) return error.InvalidHistory;
         var next: Store = .{ .gpa = s.gpa, .limits = s.limits };
         errdefer next.deinit();
         next.next_id = try input.int(u64);
@@ -180,9 +204,13 @@ pub const Store = struct {
             const len = try input.int(u32);
             if (id == 0 or id >= previous or pin > 1 or len == 0 or len > s.limits.max_item_bytes or len > s.limits.max_bytes -| bytes) return error.InvalidHistory;
             const payload = try input.take(len);
+            const source = if (v1) "" else try input.take(try input.int(u16));
+            if (source.len > max_source) return error.InvalidHistory;
             const owned = try s.gpa.dupe(u8, payload);
             errdefer s.gpa.free(owned);
-            try next.items.append(s.gpa, .{ .id = id, .copied_at = copied_at, .kind = kind, .pinned = pin == 1, .data = owned });
+            const from = try s.gpa.dupe(u8, source);
+            errdefer s.gpa.free(from);
+            try next.items.append(s.gpa, .{ .id = id, .copied_at = copied_at, .kind = kind, .pinned = pin == 1, .data = owned, .source = from });
             previous = id;
             bytes += len;
         }
@@ -193,7 +221,7 @@ pub const Store = struct {
     }
 
     pub fn load(s: *Store, io: std.Io, dir: std.Io.Dir, now: i64) !void {
-        const body = dir.readFileAlloc(io, filename, s.gpa, .limited(s.limits.max_bytes + s.limits.max_items * 22 + 21)) catch |e| switch (e) {
+        const body = dir.readFileAlloc(io, filename, s.gpa, .limited(s.limits.max_bytes + s.limits.max_items * (24 + max_source) + 21)) catch |e| switch (e) {
             error.FileNotFound => return,
             else => return e,
         };
@@ -392,4 +420,35 @@ test "clipboard loading prunes expired records and rejects corrupt input without
     const extra = try std.mem.concat(a, u8, &.{ body, "extra" });
     defer a.free(extra);
     try t.expectError(error.InvalidHistory, back.decode(extra, 210));
+}
+
+test "clipboard keeps each copy's source app, and reads histories kept before it" {
+    const t = std.testing;
+    var s: Store = .init(t.allocator);
+    defer s.deinit();
+    _ = try s.addFrom(.text, "from Notes", "/System/Applications/Notes.app", 100);
+    _ = try s.add(.text, "unknown", 101);
+    const body = try s.encode(t.allocator);
+    defer t.allocator.free(body);
+    var back: Store = .init(t.allocator);
+    defer back.deinit();
+    try back.decode(body, 102);
+    try t.expectEqualStrings("", back.items.items[0].source);
+    try t.expectEqualStrings("/System/Applications/Notes.app", back.items.items[1].source);
+    // A version 1 file: no source after each payload.
+    var old: std.ArrayList(u8) = .empty;
+    defer old.deinit(t.allocator);
+    try old.appendSlice(t.allocator, magic_v1);
+    try put(&old, t.allocator, u64, 2);
+    try put(&old, t.allocator, u32, 1);
+    try put(&old, t.allocator, u64, 1);
+    try put(&old, t.allocator, i64, 100);
+    try old.appendSlice(t.allocator, &.{ 0, 0 });
+    try put(&old, t.allocator, u32, 2);
+    try old.appendSlice(t.allocator, "hi");
+    var legacy: Store = .init(t.allocator);
+    defer legacy.deinit();
+    try legacy.decode(old.items, 101);
+    try t.expectEqualStrings("hi", legacy.items.items[0].data);
+    try t.expectEqualStrings("", legacy.items.items[0].source);
 }

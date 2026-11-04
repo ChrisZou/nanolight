@@ -345,7 +345,7 @@ fn openApp(path: []const u8) void {
 }
 
 /// The Finder's icon for `path`, drawn at 64 pixels and encoded as PNG.
-fn iconPng(gpa: std.mem.Allocator, path: []const u8) ?[]u8 {
+pub fn iconPng(gpa: std.mem.Allocator, path: []const u8) ?[]u8 {
     const pool = objc.Pool.push();
     defer pool.pop();
     const ws = objc.msg(objc.Object, objc.class("NSWorkspace"), "sharedWorkspace", .{});
