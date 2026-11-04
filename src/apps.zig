@@ -298,8 +298,30 @@ const names = struct {
                 try keep(a, &list, objc.fromNSString(v));
             }
         }
+        // Chinese names by their pinyin too: "jian", "jianying", "jyzy"
+        // all find 剪映专业版.
+        for (0..list.items.len) |i| {
+            const name = list.items[i];
+            if (for (name) |ch| {
+                if (ch >= 0x80) break false;
+            } else true) continue;
+            const latin = pinyin(name) orelse continue;
+            try keep(a, &list, latin);
+            var joined: std.ArrayList(u8) = .empty;
+            for (latin) |ch| if (ch != ' ') try joined.append(a, ch);
+            try keep(a, &list, joined.items);
+        }
         // The first is the shown name itself.
         return .{ .shown = first, .also = list.items[1..] };
+    }
+
+    /// `name` in pinyin, toneless and lowercase ("jian ying zhuan ye
+    /// ban"), by the system's transform; valid until the pool is popped.
+    fn pinyin(name: []const u8) ?[]const u8 {
+        const t = objc.nsString("Han-Latin; Latin-ASCII; Lower");
+        const out = objc.msg(?objc.Object, objc.nsString(name), "stringByApplyingTransform:reverse:", .{ t, objc.NO }) orelse return null;
+        const latin = objc.fromNSString(out);
+        return if (latin.len > 0) latin else null;
     }
 
     fn keep(a: std.mem.Allocator, list: *std.ArrayList([]const u8), name: []const u8) !void {
@@ -390,4 +412,12 @@ test "a second look tells an app installed since from no change (#15)" {
     later.scan(t.io, home);
     try t.expect(!ix.same(&later));
     try t.expect(later.find("DOSBox-X") != null);
+}
+
+test "Chinese names are spelt in pinyin" {
+    if (!mac) return error.SkipZigTest;
+    const pool = objc.Pool.push();
+    defer pool.pop();
+    try std.testing.expectEqualStrings("jian ying zhuan ye ban", names.pinyin("剪映专业版").?);
+    try std.testing.expectEqualStrings("uu yuan cheng", names.pinyin("UU远程").?);
 }
