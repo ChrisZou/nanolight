@@ -78,8 +78,14 @@ pub fn score(query_in: []const u8, name: []const u8) ?Match {
     while (indexOfFold(name, query, at)) |i| : (at = i + 1) {
         if (wordStart(name, i)) return .run(800 - slack - @as(i32, @intCast(@min(i, 60))), i, query.len);
     }
-    if (initials(query, name)) |m| return m;
+    // Past here letters are taken one byte at a time: only for ASCII
+    // queries, so 剪映's bytes never light half a character of another name.
+    const ascii = for (query) |ch| {
+        if (ch >= 0x80) break false;
+    } else true;
+    if (ascii) if (initials(query, name)) |m| return m;
     if (indexOfFold(name, query, 0)) |i| return .run(600 - slack - @as(i32, @intCast(@min(i, 60))), i, query.len);
+    if (!ascii) return null;
     return subsequence(query, name) orelse typo(query, name);
 }
 
@@ -224,11 +230,20 @@ pub const Ranked = struct {
 };
 
 /// The best `out.len` of `names` for `query`, best first, with `boost`
-/// (how often each was opened) added to its score. Returns how many matched.
-pub fn rank(query: []const u8, names: []const []const u8, boost: []const u16, out: []Ranked) usize {
+/// (how often each was opened) added to its score. An app is also found
+/// by its `aliases` (a point lower, nothing lit: the row shows its name).
+/// Returns how many matched.
+pub fn rank(query: []const u8, names: []const []const u8, aliases: []const []const []const u8, boost: []const u16, out: []Ranked) usize {
     var n: usize = 0;
     for (names, 0..) |name, i| {
-        var m = score(query, name) orelse continue;
+        var found = score(query, name);
+        if (i < aliases.len) for (aliases[i]) |alias| {
+            var a = score(query, alias) orelse continue;
+            a.score -= 1;
+            a.n = 0;
+            if (found == null or a.score > found.?.score) found = a;
+        };
+        var m = found orelse continue;
         if (i < boost.len) m.score += @min(@as(i32, boost[i]) * 25, 250);
         const r: Ranked = .{ .index = @intCast(i), .match = m };
         if (n < out.len) {
@@ -292,16 +307,30 @@ test "a subsequence highlights the letters it took" {
 test "rank keeps the best, best first, and opening often lifts a name" {
     const names = [_][]const u8{ "Notes Helper", "Notes", "Numbers", "Keynote" };
     var out: [3]Ranked = undefined;
-    const n = rank("no", &names, &.{}, &out);
+    const n = rank("no", &names, &.{}, &.{}, &out);
     try std.testing.expectEqual(@as(usize, 3), n);
     try std.testing.expectEqual(@as(u32, 1), out[0].index);
     try std.testing.expectEqual(@as(u32, 3), out[2].index);
     // The helper, opened once, climbs past Notes.
-    const n2 = rank("no", &names, &.{ 1, 0, 0, 0 }, &out);
+    const n2 = rank("no", &names, &.{}, &.{ 1, 0, 0, 0 }, &out);
     try std.testing.expectEqual(@as(usize, 3), n2);
     try std.testing.expectEqual(@as(u32, 0), out[0].index);
     // Only as many as there's room for: the worst one is the one dropped.
     var two: [2]Ranked = undefined;
-    try std.testing.expectEqual(@as(usize, 2), rank("no", &names, &.{}, &two));
+    try std.testing.expectEqual(@as(usize, 2), rank("no", &names, &.{}, &.{}, &two));
     try std.testing.expectEqual(@as(u32, 0), two[1].index);
+}
+
+test "an app is found by its other names, and Chinese never half-matches" {
+    const t = std.testing;
+    const names = [_][]const u8{ "剪映专业版", "Notes" };
+    const aliases = [_][]const []const u8{ &.{"VideoFusion-macOS"}, &.{} };
+    var out: [4]Ranked = undefined;
+    try t.expectEqual(@as(usize, 1), rank("剪映", &names, &aliases, &.{}, &out));
+    try t.expectEqual(@as(u32, 0), out[0].index);
+    try t.expectEqual(@as(usize, 6), out[0].match.matched().len);
+    try t.expectEqual(@as(usize, 1), rank("video", &names, &aliases, &.{}, &out));
+    try t.expectEqual(@as(usize, 0), out[0].match.matched().len);
+    // Chinese is matched as typed, never byte by byte.
+    try t.expect(score("剪业", "剪映专业版") == null);
 }

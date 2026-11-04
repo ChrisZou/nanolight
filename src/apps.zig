@@ -1,5 +1,7 @@
 //! The apps Nanolight finds: on the Mac every `.app` in the usual folders
-//! (and one folder down, for Utilities and suites), named without `.app`;
+//! (and one folder down, for Utilities and suites), named as the Finder
+//! names them (剪映专业版, not VideoFusion-macOS) and found by their file
+//! name and their names in the user's languages too;
 //! on Linux the desktop entries (apps_linux.zig), on Windows the Start
 //! menu's shortcuts (apps_win.zig). Sorted and without duplicates. How often each was opened is kept in the
 //! app's defaults and lifts it in the ranking. Icons are asked of the
@@ -13,6 +15,8 @@ const objc = nanoui.objc;
 pub const App = struct {
     name: []const u8,
     path: []const u8,
+    /// Other names it is found by: its file's, its localized ones.
+    aliases: []const []const u8 = &.{},
     /// The folder it is in, as the row shows it: "Applications", "Utilities".
     folder: []const u8,
 };
@@ -59,6 +63,8 @@ pub const Index = struct {
     apps: std.ArrayList(App) = .empty,
     /// The names alone, for `search.rank`.
     names: std.ArrayList([]const u8) = .empty,
+    /// Each app's other names, in step with `names`.
+    aliases: std.ArrayList([]const []const u8) = .empty,
     /// Times each was opened.
     launches: std.ArrayList(u16) = .empty,
     icons: std.AutoHashMapUnmanaged(u32, ?Icon) = .empty,
@@ -75,6 +81,7 @@ pub const Index = struct {
         ix.icons.deinit(ix.gpa);
         ix.apps.deinit(ix.gpa);
         ix.names.deinit(ix.gpa);
+        ix.aliases.deinit(ix.gpa);
         ix.launches.deinit(ix.gpa);
         ix.arena.deinit();
     }
@@ -87,11 +94,19 @@ pub const Index = struct {
 
     /// Adds an app, its row saying `folder` ("Applications", "Start").
     pub fn addIn(ix: *Index, name: []const u8, path: []const u8, folder: []const u8) !void {
-        for (ix.names.items) |n| if (std.ascii.eqlIgnoreCase(n, name)) return;
+        return ix.addNamed(name, &.{}, path, folder);
+    }
+
+    /// Adds an app found by `aliases` as well as its name.
+    pub fn addNamed(ix: *Index, name: []const u8, aliases: []const []const u8, path: []const u8, folder: []const u8) !void {
+        if (ix.find(name) != null) return;
         const a = ix.arena.allocator();
+        const also = try a.alloc([]const u8, aliases.len);
+        for (aliases, also) |x, *y| y.* = try a.dupe(u8, x);
         const p = try a.dupe(u8, path);
-        try ix.apps.append(ix.gpa, .{ .name = try a.dupe(u8, name), .path = p, .folder = try a.dupe(u8, folder) });
+        try ix.apps.append(ix.gpa, .{ .name = try a.dupe(u8, name), .path = p, .folder = try a.dupe(u8, folder), .aliases = also });
         try ix.names.append(ix.gpa, ix.apps.items[ix.apps.items.len - 1].name);
+        try ix.aliases.append(ix.gpa, also);
         try ix.launches.append(ix.gpa, 0);
     }
 
@@ -115,7 +130,14 @@ pub const Index = struct {
             if (e.name.len == 0 or e.name[0] == '.') continue;
             const full = std.fmt.bufPrint(&buf, "{s}/{s}", .{ dir_path, e.name }) catch continue;
             if (std.mem.endsWith(u8, e.name, ".app")) {
-                ix.add(e.name[0 .. e.name.len - 4], full) catch return;
+                const stem = e.name[0 .. e.name.len - 4];
+                const folder = std.fs.path.basename(dir_path);
+                if (!mac) {
+                    ix.add(stem, full) catch return;
+                    continue;
+                }
+                const n = names.of(full, stem);
+                ix.addNamed(n.shown, n.also, full, folder) catch return;
             } else if (depth > 0 and e.kind == .directory) {
                 // The callee formats into its own buffer: copy the path first.
                 var sub: [1024]u8 = undefined;
@@ -133,7 +155,10 @@ pub const Index = struct {
             }
         };
         std.sort.pdq(App, ix.apps.items, Ctx{}, Ctx.lessThan);
-        for (ix.apps.items, 0..) |a, i| ix.names.items[i] = a.name;
+        for (ix.apps.items, 0..) |a, i| {
+            ix.names.items[i] = a.name;
+            ix.aliases.items[i] = a.aliases;
+        }
     }
 
     /// Whether `other` lists the same apps and commands, at the same
@@ -146,8 +171,11 @@ pub const Index = struct {
         return true;
     }
 
+    /// The app called `name`, or found by it (counts kept under a file
+    /// name, a starter's English name).
     pub fn find(ix: *const Index, name: []const u8) ?u32 {
         for (ix.names.items, 0..) |n, i| if (std.ascii.eqlIgnoreCase(n, name)) return @intCast(i);
+        for (ix.aliases.items, 0..) |also, i| for (also) |n| if (std.ascii.eqlIgnoreCase(n, name)) return @intCast(i);
         return null;
     }
 
@@ -221,6 +249,65 @@ pub const Index = struct {
 };
 
 const store_key = "nanolight.launches";
+
+/// A Mac app's names, asked of the system once per path (the index is
+/// made again each time the panel opens) and kept for the process.
+/// Main thread only.
+const names = struct {
+    const Names = struct { shown: []const u8, also: []const []const u8 };
+    var cache: std.StringHashMapUnmanaged(Names) = .empty;
+    var arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
+
+    fn of(path: []const u8, stem: []const u8) Names {
+        if (cache.get(path)) |n| return n;
+        const a = arena.allocator();
+        const n = ask(a, path, stem) catch return .{ .shown = stem, .also = &.{} };
+        const key = a.dupe(u8, path) catch return n;
+        cache.put(std.heap.page_allocator, key, n) catch {};
+        return n;
+    }
+
+    /// The Finder's name, then the file's and the bundle's names in each
+    /// of the user's languages, each once.
+    fn ask(a: std.mem.Allocator, path: []const u8, stem: []const u8) !Names {
+        const pool = objc.Pool.push();
+        defer pool.pop();
+        const p = objc.nsString(path);
+        const fm = objc.msg(objc.Object, objc.class("NSFileManager"), "defaultManager", .{});
+        var shown = objc.fromNSString(objc.msg(?objc.Object, fm, "displayNameAtPath:", .{p}));
+        if (std.mem.endsWith(u8, shown, ".app")) shown = shown[0 .. shown.len - 4];
+        if (shown.len == 0) shown = stem;
+        var list: std.ArrayList([]const u8) = .empty;
+        const first = try a.dupe(u8, shown);
+        try list.append(a, first);
+        try keep(a, &list, stem);
+        const bundle = objc.msg(?objc.Object, objc.class("NSBundle"), "bundleWithPath:", .{p}) orelse
+            return .{ .shown = first, .also = list.items };
+        const locs = objc.msg(objc.Object, bundle, "localizations", .{});
+        const langs = objc.msg(objc.Object, objc.class("NSLocale"), "preferredLanguages", .{});
+        for (0..objc.msg(objc.NSUInteger, langs, "count", .{})) |i| {
+            const lang = objc.msg(objc.Object, langs, "objectAtIndex:", .{i});
+            const one = objc.msg(objc.Object, objc.class("NSArray"), "arrayWithObject:", .{lang});
+            const best = objc.msg(objc.Object, objc.class("NSBundle"), "preferredLocalizationsFromArray:forPreferences:", .{ locs, one });
+            const loc = objc.msg(?objc.Object, best, "firstObject", .{}) orelse continue;
+            const file = objc.msg(?objc.Object, bundle, "pathForResource:ofType:inDirectory:forLocalization:", .{ objc.nsString("InfoPlist"), objc.nsString("strings"), @as(?objc.Object, null), loc }) orelse continue;
+            const dict = objc.msg(?objc.Object, objc.class("NSDictionary"), "dictionaryWithContentsOfFile:", .{file}) orelse continue;
+            for ([_][]const u8{ "CFBundleDisplayName", "CFBundleName" }) |key| {
+                const v = objc.msg(?objc.Object, dict, "objectForKey:", .{objc.nsString(key)}) orelse continue;
+                if (objc.msg(objc.BOOL, v, "isKindOfClass:", .{objc.class("NSString")}) == objc.NO) continue;
+                try keep(a, &list, objc.fromNSString(v));
+            }
+        }
+        // The first is the shown name itself.
+        return .{ .shown = first, .also = list.items[1..] };
+    }
+
+    fn keep(a: std.mem.Allocator, list: *std.ArrayList([]const u8), name: []const u8) !void {
+        if (name.len == 0 or name.len > 64) return;
+        for (list.items) |n| if (std.ascii.eqlIgnoreCase(n, name)) return;
+        try list.append(a, try a.dupe(u8, name));
+    }
+};
 
 /// Opens the Mac app at `path` without waiting for it: LaunchServices
 /// answers when the app has started, which can take seconds (an app

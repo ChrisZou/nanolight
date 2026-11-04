@@ -131,7 +131,7 @@ pub const Results = struct {
     /// Lists what `query` finds among `names` (with how often each was
     /// opened, `boost`), then Ask Codex. `web` is ignored (kept for call sites).
     /// Empty query lists `suggestions` only.
-    pub fn build(r: *Results, query_in: []const u8, names: []const []const u8, boost: []const u16, suggestions: []const u32, web: []const []const u8) void {
+    pub fn build(r: *Results, query_in: []const u8, names: []const []const u8, aliases: []const []const []const u8, boost: []const u16, suggestions: []const u32, web: []const []const u8) void {
         r.n = 0;
         const query = std.mem.trim(u8, query_in, " ");
         r.suggested = query.len == 0;
@@ -162,7 +162,7 @@ pub const Results = struct {
             r.push(.{ .kind = .calc });
         }
         var ranked: [max_apps]search.Ranked = undefined;
-        const n = search.rank(query, names, boost, &ranked);
+        const n = search.rank(query, names, aliases, boost, &ranked);
         for (ranked[0..n]) |x| r.push(.{ .kind = .app, .app = x.index, .match = x.match });
         // "settings" / "preferences": Nanolight's own screen, right under
         // the apps: Return still opens System Settings, a key away from this.
@@ -281,32 +281,32 @@ test "math first, then apps; Ask Codex without Google or Ask & Search" {
     const t = std.testing;
     const names = [_][]const u8{ "Safari", "System Settings", "Calculator" };
     var r: Results = .{};
-    r.build("saf", &names, &.{}, &.{}, &.{});
+    r.build("saf", &names, &.{}, &.{}, &.{}, &.{});
     try t.expectEqual(Kind.app, r.rows[0].kind);
     try t.expectEqual(@as(u32, 0), r.rows[0].app);
     try t.expectEqual(Kind.ai_ask, r.rows[r.n - 1].kind);
     try t.expectEqual(@as(usize, 2), r.n);
     try t.expectEqualStrings("Applications", r.section(0).?);
     try t.expectEqualStrings("AI", r.section(1).?);
-    r.build("2^10 * 3", &names, &.{}, &.{}, &.{"ignored"});
+    r.build("2^10 * 3", &names, &.{}, &.{}, &.{}, &.{"ignored"});
     try t.expectEqual(Kind.calc, r.rows[0].kind);
     try t.expectEqualStrings("3,072", r.answer);
     try t.expectEqualStrings("0xC00", r.hex);
     try t.expectEqual(@as(usize, 1), r.n);
-    r.build("", &names, &.{}, &.{ 2, 0 }, &.{});
+    r.build("", &names, &.{}, &.{}, &.{ 2, 0 }, &.{});
     try t.expectEqual(@as(usize, 2), r.n);
     try t.expectEqualStrings("Suggestions", r.section(0).?);
-    r.build("liquid glass", &names, &.{}, &.{}, &.{ "ignored" });
+    r.build("liquid glass", &names, &.{}, &.{}, &.{}, &.{ "ignored" });
     try t.expectEqual(@as(usize, 1), r.n);
     try t.expectEqual(Kind.ai_ask, r.rows[0].kind);
     try t.expectEqualStrings("AI", r.section(0).?);
     // Google suggestions are ignored even when supplied.
-    r.build("liquid gl", &names, &.{}, &.{}, &.{ "liquid glass", "liquid glue" });
+    r.build("liquid gl", &names, &.{}, &.{}, &.{}, &.{ "liquid glass", "liquid glue" });
     try t.expectEqual(@as(usize, 1), r.n);
     try t.expectEqual(Kind.ai_ask, r.rows[0].kind);
     // A full list of apps ends with Ask Codex only.
     const many = [_][]const u8{ "Safari", "Mail", "Maps", "Pages", "Calendar", "Calculator", "FaceTime" };
-    r.build("a", &many, &.{}, &.{}, &.{ "a1", "a2", "a3", "a4" });
+    r.build("a", &many, &.{}, &.{}, &.{}, &.{ "a1", "a2", "a3", "a4" });
     try t.expectEqual(@as(usize, max_apps + 1), r.n);
     try t.expectEqual(Kind.ai_ask, r.rows[max_apps].kind);
 }
@@ -315,31 +315,31 @@ test "reload, restart and quit are built-in commands" {
     const t = std.testing;
     const names = [_][]const u8{"Safari"};
     var r: Results = .{};
-    r.build("reload", &names, &.{}, &.{}, &.{});
+    r.build("reload", &names, &.{}, &.{}, &.{}, &.{});
     try t.expectEqual(@as(usize, 1), r.n);
     try t.expectEqual(Kind.restart, r.rows[0].kind);
     try t.expectEqualStrings("Restart Nanolight", Kind.restart.action());
-    r.build("Restart", &names, &.{}, &.{}, &.{});
+    r.build("Restart", &names, &.{}, &.{}, &.{}, &.{});
     try t.expectEqual(Kind.restart, r.rows[0].kind);
-    r.build("quit", &names, &.{}, &.{}, &.{});
+    r.build("quit", &names, &.{}, &.{}, &.{}, &.{});
     try t.expectEqual(Kind.quit, r.rows[0].kind);
     try t.expectEqualStrings("Quit Nanolight", Kind.quit.action());
     // Prefixes and Chinese aliases: only the command row (no Ask Codex).
     for ([_][]const u8{ "re", "rel", "rest", "  re  ", "重启", "重新启动", "重载" }) |q| {
-        r.build(q, &names, &.{}, &.{}, &.{});
+        r.build(q, &names, &.{}, &.{}, &.{}, &.{});
         try t.expectEqual(@as(usize, 1), r.n);
         try t.expectEqual(Kind.restart, r.rows[0].kind);
     }
     for ([_][]const u8{ "qu", "qui", "退出", "关掉" }) |q| {
-        r.build(q, &names, &.{}, &.{}, &.{});
+        r.build(q, &names, &.{}, &.{}, &.{}, &.{});
         try t.expectEqual(@as(usize, 1), r.n);
         try t.expectEqual(Kind.quit, r.rows[0].kind);
     }
     // Too short / unrelated stays a normal query.
-    r.build("r", &names, &.{}, &.{}, &.{});
+    r.build("r", &names, &.{}, &.{}, &.{}, &.{});
     try t.expect(r.n > 1);
     try t.expect(r.rows[0].kind != Kind.restart);
-    r.build("q", &names, &.{}, &.{}, &.{});
+    r.build("q", &names, &.{}, &.{}, &.{}, &.{});
     try t.expect(r.rows[0].kind != Kind.quit);
 }
 
@@ -349,7 +349,7 @@ test "clip and cb open clipboard history" {
     const names = [_][]const u8{"Safari"};
     var r: Results = .{};
     for ([_][]const u8{ "clip", "CLIP", "cb", "CB", "  cb  " }) |q| {
-        r.build(q, &names, &.{}, &.{}, &.{});
+        r.build(q, &names, &.{}, &.{}, &.{}, &.{});
         try t.expectEqual(@as(usize, 1), r.n);
         try t.expectEqual(Kind.clipboard, r.rows[0].kind);
         try t.expectEqualStrings("Open Clipboard History", Kind.clipboard.action());

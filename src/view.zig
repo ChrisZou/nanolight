@@ -500,7 +500,7 @@ pub const Nanolight = struct {
         var sug: [results.max_apps]u32 = undefined;
         const ns = s.index.suggestions(&sug);
         var web: [suggest.max_rows][]const u8 = undefined;
-        s.res.build(s.query.text(), s.index.names.items, s.index.launches.items, sug[0..ns], s.web.slices(&web));
+        s.res.build(s.query.text(), s.index.names.items, s.index.aliases.items, s.index.launches.items, sug[0..ns], s.web.slices(&web));
     }
 
     /// Google's completions of `typed` (what `Host.suggest` asked): kept,
