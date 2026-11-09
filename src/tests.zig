@@ -243,9 +243,12 @@ test "the panel finds, moves, answers and hands off" {
     try t.init(gpa, .init(&s, view.Nanolight.view), .{ .width = view.width, .height = 480, .dark = true });
     defer t.deinit();
     t.settle(1);
-    // No query: suggestions.
-    try std.testing.expect(t.hasText("Suggestions"));
-    try std.testing.expect(t.hasText("Safari"));
+    // No query: the field alone, no rows and no footer.
+    try std.testing.expect(!t.hasText("Suggestions"));
+    try std.testing.expect(!t.hasText("Safari"));
+    try std.testing.expect(!t.hasText("Settings"));
+    try std.testing.expectEqual(view.header_h, s.height());
+    press(&t, &.{.{ .insert = "saf" }});
     // After an automatic update, the footer says so in place of the name.
     const bo = @import("build_options");
     var footer: [64]u8 = undefined;
@@ -254,9 +257,17 @@ test "the panel finds, moves, answers and hands off" {
     t.settle(1);
     try std.testing.expect(t.hasText("Updated to 0.1.3 · 5 apps"));
     s.note = "";
+    // As Alfred's, a press on the panel's background (the footer's blank
+    // middle) moves the window; one on a row or in the field doesn't.
+    t.ctx.input.click_count = 1;
+    t.moveTo(view.width / 2, s.height() - view.footer_h / 2);
+    try std.testing.expect(t.ctx.startsWindowDrag());
+    t.moveTo(view.width / 2, view.header_h + 1 + view.list_pad + view.section_h + view.row_h / 2);
+    try std.testing.expect(!t.ctx.startsWindowDrag());
+    t.moveTo(view.width / 2, view.header_h / 2);
+    try std.testing.expect(!t.ctx.startsWindowDrag());
 
     // The top app's name completes what is typed; → takes it.
-    press(&t, &.{.{ .insert = "saf" }});
     try std.testing.expect(t.hasText("ari"));
     press(&t, &.{.{ .command = .move_right }});
     try std.testing.expectEqualStrings("safari", s.query.text());
@@ -552,7 +563,8 @@ test "settings opens from ⌘,, from typing, and from the gear" {
     try t.init(gpa, .init(&s, view.Nanolight.view), .{ .width = view.width, .height = view.max_height, .dark = true });
     defer t.deinit();
     t.settle(1);
-    // The gear is in the footer, named.
+    // The gear is in the footer, named (the footer shows once there are rows).
+    press(&t, &.{.{ .insert = "saf" }});
     try std.testing.expect(t.hasText("Settings"));
     try t.clickText("Settings");
     t.settle(1);
@@ -576,6 +588,7 @@ test "settings opens from ⌘,, from typing, and from the gear" {
     try std.testing.expect(t.hasText("Safari"));
 
     // Typing "settings" lists the row; Return opens it.
+    press(&t, &.{ .{ .command = .select_all }, .{ .command = .delete_backward } });
     press(&t, &.{.{ .insert = "settings" }});
     try std.testing.expect(t.hasText("Nanolight Settings"));
     try std.testing.expectEqual(results.Kind.settings, s.res.rows[0].kind);
@@ -716,6 +729,14 @@ test "img, file and ai prefixes list their own rows" {
     try std.testing.expectEqual(results.Kind.ai_ask, s.res.rows[0].kind);
     try std.testing.expectEqual(@as(usize, 1), s.res.n);
     try std.testing.expectEqualStrings("今天是农历初几 2026", s.ai_question[0..s.ai_question_len]);
+    // Answered, then nothing typed: the field alone, not the last answer.
+    s.ai_status = .done;
+    s.ai_text = "我在，怎么啦？";
+    s.ai_question_len = 0;
+    s.query.set("");
+    s.built = 1;
+    s.rebuild();
+    try std.testing.expectEqual(@as(usize, 0), s.res.n);
 }
 
 test "pm prefix lists send-to-PM row" {

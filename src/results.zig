@@ -1,5 +1,5 @@
 //! What the panel lists for a query, in order: the answer when it is math,
-//! the apps that match it (or, with no query, suggestions), then Ask Codex
+//! the apps that match it (nothing, with no query), then Ask Codex
 //! for exactly what is typed. Built-in commands (`reload` / `quit` / `pm `,
 //! and their aliases) list only themselves. Prefix modes (`img` / `f` /
 //! `ai`) keep their own lists. With no app or answer, Return asks Codex.
@@ -130,8 +130,9 @@ pub const Results = struct {
 
     /// Lists what `query` finds among `names` (with how often each was
     /// opened, `boost`), then Ask Codex. `web` is ignored (kept for call sites).
-    /// Empty query lists `suggestions` only.
+    /// Empty query lists nothing; `suggestions` is ignored (kept for call sites).
     pub fn build(r: *Results, query_in: []const u8, names: []const []const u8, aliases: []const []const []const u8, boost: []const u16, suggestions: []const u32, web: []const []const u8) void {
+        _ = suggestions;
         r.n = 0;
         const query = std.mem.trim(u8, query_in, " ");
         r.suggested = query.len == 0;
@@ -149,10 +150,8 @@ pub const Results = struct {
             r.push(.{ .kind = .quit });
             return;
         }
-        if (query.len == 0) {
-            for (suggestions[0..@min(suggestions.len, max_apps)]) |i| r.push(.{ .kind = .app, .app = i });
-            return;
-        }
+        // Nothing typed, nothing listed: the panel is its field alone.
+        if (query.len == 0) return;
         if (calc.eval(query)) |v| {
             r.answer = calc.format(&r.answer_buf, v, true);
             r.hex = if (v >= 0 and v < 1e15 and v == @round(v))
@@ -293,9 +292,9 @@ test "math first, then apps; Ask Codex without Google or Ask & Search" {
     try t.expectEqualStrings("3,072", r.answer);
     try t.expectEqualStrings("0xC00", r.hex);
     try t.expectEqual(@as(usize, 1), r.n);
+    // Nothing typed lists nothing, not even suggestions.
     r.build("", &names, &.{}, &.{}, &.{ 2, 0 }, &.{});
-    try t.expectEqual(@as(usize, 2), r.n);
-    try t.expectEqualStrings("Suggestions", r.section(0).?);
+    try t.expectEqual(@as(usize, 0), r.n);
     r.build("liquid glass", &names, &.{}, &.{}, &.{}, &.{ "ignored" });
     try t.expectEqual(@as(usize, 1), r.n);
     try t.expectEqual(Kind.ai_ask, r.rows[0].kind);

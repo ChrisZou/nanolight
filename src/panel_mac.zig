@@ -28,8 +28,67 @@ pub fn setup(app: *nanoui.App, w: *nanoui.Window, s: *view.Nanolight, h: f32) vo
     glass = backdrop(w, 18, h);
 }
 
-/// A fifth of the way down the main screen, centered.
+/// Where `place` last put the window (its frame's origin): if it isn't
+/// there as it is placed again, it was dragged, and that is kept.
+var placed: ?objc.CGPoint = null;
+const key_x = "PanelOriginX";
+const key_y = "PanelOriginY";
+
+fn defaults() objc.Object {
+    return objc.msg(objc.Object, objc.class("NSUserDefaults"), "standardUserDefaults", .{});
+}
+
+fn origin(w: *nanoui.Window) objc.CGPoint {
+    return objc.msg(objc.CGRect, w.nswindow, "frame", .{}).origin;
+}
+
+/// Where the panel was dragged to, kept across launches, if it is still on
+/// a screen (one may have been unplugged since).
+fn dragged(w: *nanoui.Window) ?objc.CGPoint {
+    const d = defaults();
+    if (objc.msg(?objc.Object, d, "objectForKey:", .{objc.nsString(key_x)}) == null) return null;
+    const at: objc.CGPoint = .{ .x = objc.msg(f64, d, "doubleForKey:", .{objc.nsString(key_x)}), .y = objc.msg(f64, d, "doubleForKey:", .{objc.nsString(key_y)}) };
+    // The panel itself (the window less its shadow's margin), from its top.
+    const f = objc.msg(objc.CGRect, w.nswindow, "frame", .{});
+    const m = view.shadow_margin;
+    const top: objc.CGRect = .{ .origin = .{ .x = at.x + m, .y = at.y + f.size.height - m - 60 }, .size = .{ .width = view.width, .height = 60 } };
+    const screens = objc.msg(objc.Object, objc.class("NSScreen"), "screens", .{});
+    const n = objc.msg(objc.NSUInteger, screens, "count", .{});
+    for (0..n) |i| {
+        const s = objc.msg(objc.Object, screens, "objectAtIndex:", .{@as(objc.NSUInteger, i)});
+        const v = objc.msg(objc.CGRect, s, "visibleFrame", .{});
+        if (top.origin.x < v.origin.x + v.size.width and top.origin.x + top.size.width > v.origin.x and
+            top.origin.y >= v.origin.y and top.origin.y + top.size.height <= v.origin.y + v.size.height) return at;
+    }
+    return null;
+}
+
+/// Forgets where the panel was dragged: back to where it first opens.
+pub fn recenter(w: *nanoui.Window) void {
+    const d = defaults();
+    objc.msg(void, d, "removeObjectForKey:", .{objc.nsString(key_x)});
+    objc.msg(void, d, "removeObjectForKey:", .{objc.nsString(key_y)});
+    centered(w);
+    placed = origin(w);
+}
+
+/// Where it was dragged to last, else a fifth of the way down the main
+/// screen, centered.
 pub fn place(w: *nanoui.Window) void {
+    const now = origin(w);
+    if (placed) |p| if (@abs(now.x - p.x) > 0.5 or @abs(now.y - p.y) > 0.5) {
+        const d = defaults();
+        objc.msg(void, d, "setDouble:forKey:", .{ now.x, objc.nsString(key_x) });
+        objc.msg(void, d, "setDouble:forKey:", .{ now.y, objc.nsString(key_y) });
+    };
+    if (dragged(w)) |at| objc.msg(void, w.nswindow, "setFrameOrigin:", .{at}) else centered(w);
+    placed = origin(w);
+    // Unseen as it orders in: it still holds the frame it hid with, until
+    // the next one is drawn (issue #9). `shown` fades it in.
+    objc.msg(void, w.nswindow, "setAlphaValue:", .{@as(f64, 0)});
+}
+
+fn centered(w: *nanoui.Window) void {
     const screen = objc.msg(?objc.Object, objc.class("NSScreen"), "mainScreen", .{}) orelse return;
     const f = objc.msg(objc.CGRect, screen, "frame", .{});
     const screens = objc.msg(objc.Object, objc.class("NSScreen"), "screens", .{});
@@ -38,9 +97,6 @@ pub fn place(w: *nanoui.Window) void {
     const top = ph - (f.origin.y + f.size.height);
     // The panel there; the window is the shadow's margin bigger.
     w.setPosition(f.origin.x + (f.size.width - view.width) / 2 - view.shadow_margin, top + f.size.height * 0.2 - view.shadow_margin);
-    // Unseen as it orders in: it still holds the frame it hid with, until
-    // the next one is drawn (issue #9). `shown` fades it in.
-    objc.msg(void, w.nswindow, "setAlphaValue:", .{@as(f64, 0)});
 }
 
 /// The glass to the panel's height, in the frame that draws it (a view's

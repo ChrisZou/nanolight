@@ -117,7 +117,7 @@ pub const Live = struct {
     fn host(l: *Live) view.Host {
         const bind = @import("settings_bind.zig");
         bind.box.ctx = l;
-        return .{ .ctx = l, .open = open, .hide = hide, .resize = resize, .suggest = ask, .preview = if (mac) showPage else null, .settings = &bind.box, .pic = picSearch, .file = fileSearch, .ai = aiAsk, .restart = restartSelf, .quit = quitSelf, .pm = pmSend };
+        return .{ .ctx = l, .open = open, .hide = hide, .resize = resize, .suggest = ask, .preview = if (mac) showPage else null, .settings = &bind.box, .pic = picSearch, .file = fileSearch, .ai = aiAsk, .recenter = recenter, .restart = restartSelf, .quit = quitSelf, .pm = pmSend };
     }
 
     fn open(ctx: *anyopaque, target: []const u8) void {
@@ -146,6 +146,11 @@ pub const Live = struct {
         const l: *Live = @ptrCast(@alignCast(ctx));
         single.relaunch(l.app.io);
         l.app.quit();
+    }
+
+    fn recenter(ctx: *anyopaque) void {
+        const l: *Live = @ptrCast(@alignCast(ctx));
+        if (l.window) |w| panel.recenter(w);
     }
 
     fn quitSelf(ctx: *anyopaque) void {

@@ -36,6 +36,9 @@ pub const Host = struct {
     file: ?*const fn (ctx: *anyopaque, query: []const u8) void = null,
     /// Start a Codex one-shot; the answer lands in `Nanolight.aiDone`.
     ai: ?*const fn (ctx: *anyopaque, question: []const u8) void = null,
+    /// Puts the panel back where it first opened (a double click on its
+    /// background), forgetting where it was dragged.
+    recenter: ?*const fn (ctx: *anyopaque) void = null,
     /// Relaunch this bundle then quit (`reload` / `restart`).
     restart: ?*const fn (ctx: *anyopaque) void = null,
     /// Quit Nanolight (`quit`).
@@ -57,12 +60,12 @@ pub fn appIcon(c: *ui.Context, size: f32) void {
     _ = ui.image(c, .{ .key = "nanolight-icon", .bytes = icon_png, .max_width = size, .max_height = size, .radius = 0, .scale = 2 });
 }
 pub const header_h = 58;
-const row_h = 40;
+pub const row_h = 40;
 const calc_h = 92;
 const ai_h = 120;
-const section_h = 28;
+pub const section_h = 28;
 pub const footer_h = 38;
-const list_pad = 6;
+pub const list_pad = 6;
 /// The room a window leaves round the panel for its shadow (`Nanolight.margin`).
 pub const shadow_margin: f32 = 40;
 /// The tallest the panel gets: every app row and Ask Codex (or a pic/file
@@ -172,8 +175,9 @@ pub const Nanolight = struct {
         if (s.settings_ui.open) return settings_view.height;
         if (s.ext) |e| if (e.open) return e.height();
         if (s.previewing) return max_height;
+        // Nothing typed: the field alone.
+        if (s.res.n == 0) return header_h;
         var h: f32 = header_h + footer_h + 1;
-        if (s.res.n == 0) return h;
         h += 1 + list_pad * 2;
         for (s.res.slice(), 0..) |r, i| {
             h += switch (r.kind) {
@@ -213,6 +217,10 @@ pub const Nanolight = struct {
             });
         }
         defer shell.end();
+        // As Alfred's: anywhere that isn't a field, a row or a button moves
+        // the panel, and it opens there next time.
+        c.node(shell.index).style.window_drag = true;
+        if (c.interact(shell.index, .{}).double_clicked) if (s.host) |host| if (host.recenter) |f| f(host.ctx);
         if (!s.clip_mode) if (s.onboard) |o| if (o.active) {
             const h = s.follow(c, o.height());
             const body = ui.div(c).column().wFull().h(h).clip();
@@ -260,7 +268,7 @@ pub const Nanolight = struct {
             } else if (s.res.n > 0) {
                 ui.div(c).wFull().h(1).bg(p.hair).end();
                 s.list(c, p);
-            }
+            } else return;
             ui.spacer(c);
             s.footer(c, p);
         }
@@ -472,6 +480,17 @@ pub const Nanolight = struct {
         // or answered (same as the `ai ` / `ask ` prefix).
         {
             const question = std.mem.trim(u8, q, " \t");
+            // Nothing typed: the field alone, never the last answer.
+            if (question.len == 0) {
+                s.ai_question_len = 0;
+                if (s.ai_status != .waiting) {
+                    s.ai_status = .ready;
+                    s.ai_text = "";
+                }
+                s.fill();
+                s.sel = 0;
+                return;
+            }
             const same = question.len == s.ai_question_len and std.mem.eql(u8, question, s.ai_question[0..s.ai_question_len]);
             if (!same) {
                 if (question.len <= s.ai_question.len) {

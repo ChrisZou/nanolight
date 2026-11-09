@@ -58,6 +58,9 @@ fn xid() c_ulong {
 }
 
 /// A fifth of the way down the screen, centered.
+/// The panel isn't dragged elsewhere here: nothing to forget.
+pub fn recenter(_: *nanoui.Window) void {}
+
 pub fn place(w: *nanoui.Window) void {
     const m = w.monitorSize();
     // A fifth of the way down, but high enough that the panel at its
