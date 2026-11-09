@@ -368,7 +368,7 @@ pub const Nanolight = struct {
             .bare = true,
             .size = 21,
             .width = .fill,
-            .placeholder = "Search apps, do math, ask Grok…",
+            .placeholder = "How can I help you?",
             .placeholder_color = p.sub.alpha(0.75),
             .color = p.text,
         });

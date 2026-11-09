@@ -8,7 +8,7 @@ const view = @import("view.zig");
 const settings_view = @import("settings_view.zig");
 const tests = @import("tests.zig");
 const mac = @import("builtin").os.tag == .macos;
-const placeholder = "Search apps, do math, ask Grok…";
+const placeholder = "How can I help you?";
 
 /// Where the field's placeholder is in the first frame after the panel
 /// shows, and once it has settled.
