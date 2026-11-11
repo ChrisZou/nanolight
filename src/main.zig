@@ -160,32 +160,38 @@ pub const Live = struct {
 
     /// Sends the note in the background (NSURLSession, a 10 s timeout):
     /// the panel hides at once, a banner says how it went.
-    fn pmSend(ctx: *anyopaque, body: []const u8) void {
+    fn pmSend(ctx: *anyopaque, bot: @import("pm.zig").Bot, body: []const u8) void {
         const l: *Live = @ptrCast(@alignCast(ctx));
         const pm = @import("pm.zig");
         var arena: std.heap.ArenaAllocator = .init(l.app.gpa);
         defer arena.deinit();
-        const post = pm.prepare(arena.allocator(), l.app.io, l.home, body) orelse {
-            std.log.warn("nanolight: pm webhook not configured or note empty", .{});
-            return pm.notify(l.app.gpa, l.app.io, false);
+        const post = pm.prepare(arena.allocator(), l.app.io, l.home, bot, body) orelse {
+            std.log.warn("nanolight: {t} webhook not configured or note empty", .{bot});
+            return pm.notify(l.app.gpa, l.app.io, bot, false);
         };
         // fetch copies the request: the arena can go when this returns.
-        nanoui.http.fetch(l.app.gpa, .{
-            .url = post.url,
-            .method = "POST",
-            .headers = &.{
-                .{ .name = "Authorization", .value = post.auth },
-                .{ .name = "Content-Type", .value = "application/json" },
-            },
-            .body = post.json,
-            .timeout = pm.timeout_s,
-        }, l, pmSent);
+        switch (bot) {
+            inline else => |b| nanoui.http.fetch(l.app.gpa, .{
+                .url = post.url,
+                .method = "POST",
+                .headers = &.{
+                    .{ .name = "Authorization", .value = post.auth },
+                    .{ .name = "Content-Type", .value = "application/json" },
+                },
+                .body = post.json,
+                .timeout = pm.timeout_s,
+            }, l, struct {
+                fn f(live: *Live, r: nanoui.http.Response) void {
+                    sent(live, b, r);
+                }
+            }.f),
+        }
     }
 
-    fn pmSent(l: *Live, r: nanoui.http.Response) void {
+    fn sent(l: *Live, bot: @import("pm.zig").Bot, r: nanoui.http.Response) void {
         const ok = r.status >= 200 and r.status < 300;
-        if (!ok) std.log.warn("nanolight: pm webhook failed ({d} {s})", .{ r.status, r.err });
-        @import("pm.zig").notify(l.app.gpa, l.app.io, ok);
+        if (!ok) std.log.warn("nanolight: {t} webhook failed ({d} {s})", .{ bot, r.status, r.err });
+        @import("pm.zig").notify(l.app.gpa, l.app.io, bot, ok);
     }
 
     // ----- sync (account.zig) -----
@@ -287,7 +293,6 @@ pub const Live = struct {
             .timeout = 4,
         }, a, Ask.done);
     }
-
 
     fn picSearch(ctx: *anyopaque, query: []const u8) void {
         const l: *Live = @ptrCast(@alignCast(ctx));
@@ -714,7 +719,6 @@ pub const Live = struct {
         }.f);
     }
 };
-
 
 /// A Codex one-shot in flight.
 const AiJob = struct {

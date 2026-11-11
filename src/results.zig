@@ -21,6 +21,8 @@ pub const Kind = enum {
     quit,
     /// Send a note to the project manager via webhook (`pm `).
     pm,
+    /// Send a note to Alfred via webhook (`af `).
+    af,
     calc,
     app,
     /// A Picemon image hit (`Row.pic`).
@@ -43,7 +45,7 @@ pub const Kind = enum {
     pub fn label(k: Kind) []const u8 {
         return switch (k) {
             .clipboard => "Clipboard",
-            .restart, .quit, .pm => "Nanolight",
+            .restart, .quit, .pm, .af => "Nanolight",
             .calc => "Calculator",
             .app => "Application",
             .pic => "Image",
@@ -61,6 +63,7 @@ pub const Kind = enum {
             .restart => "Restart Nanolight",
             .quit => "Quit Nanolight",
             .pm => "Send to PM",
+            .af => "Send to Alfred",
             .calc => "Copy Answer",
             .app => "Open Application",
             .pic => "Open Image",
@@ -77,7 +80,7 @@ pub const Kind = enum {
     fn section(k: Kind, suggested: bool) []const u8 {
         return switch (k) {
             .clipboard => "Clipboard",
-            .restart, .quit, .pm => "Nanolight",
+            .restart, .quit, .pm, .af => "Nanolight",
             .calc => "Calculator",
             .app => if (suggested) "Suggestions" else "Applications",
             .pic => "Images",
@@ -173,7 +176,6 @@ pub const Results = struct {
         r.push(.{ .kind = .ai_ask });
     }
 
-
     /// Picemon hits only (from `img ` / `pic `).
     pub fn buildPic(r: *Results, n: usize) void {
         r.n = 0;
@@ -200,13 +202,16 @@ pub const Results = struct {
         if (answered) r.push(.{ .kind = .ai_answer }) else r.push(.{ .kind = .ai_ask });
     }
 
-    /// One "发给项目经理" row (from `pm ` / `PM `).
-    pub fn buildPm(r: *Results) void {
+    /// One "发给项目经理" / "发给 Alfred" row (from `pm ` / `af `).
+    pub fn buildPm(r: *Results, bot: @import("pm.zig").Bot) void {
         r.n = 0;
         r.suggested = false;
         r.answer = "";
         r.hex = "";
-        r.push(.{ .kind = .pm });
+        r.push(.{ .kind = switch (bot) {
+            .pm => .pm,
+            .af => .af,
+        } });
     }
 
     /// "settings" and "preferences", the words people type for this.
@@ -235,7 +240,7 @@ pub fn url(buf: []u8, kind: Kind, query: []const u8) []const u8 {
         .ask_grok => "https://grok.com/?q=",
         .search_x => "https://x.com/search?f=live&q=",
         .search_web, .suggest => "https://www.google.com/search?q=",
-        .calc, .app, .settings, .clipboard, .restart, .quit, .pm, .pic, .file, .ai_ask, .ai_answer => return "",
+        .calc, .app, .settings, .clipboard, .restart, .quit, .pm, .af, .pic, .file, .ai_ask, .ai_answer => return "",
     };
     var w: std.Io.Writer = .fixed(buf);
     w.writeAll(base) catch return "";
@@ -254,7 +259,6 @@ pub fn escape(w: *std.Io.Writer, query: []const u8) void {
         } else w.print("%{X:0>2}", .{ch}) catch break;
     }
 }
-
 
 /// ASCII prefix match: `needle` is a case-insensitive prefix of `haystack`.
 fn startsWithIgnoreCase(haystack: []const u8, needle: []const u8) bool {
@@ -295,7 +299,7 @@ test "math first, then apps; Ask Codex without Google or Ask & Search" {
     // Nothing typed lists nothing, not even suggestions.
     r.build("", &names, &.{}, &.{}, &.{ 2, 0 }, &.{});
     try t.expectEqual(@as(usize, 0), r.n);
-    r.build("liquid glass", &names, &.{}, &.{}, &.{}, &.{ "ignored" });
+    r.build("liquid glass", &names, &.{}, &.{}, &.{}, &.{"ignored"});
     try t.expectEqual(@as(usize, 1), r.n);
     try t.expectEqual(Kind.ai_ask, r.rows[0].kind);
     try t.expectEqualStrings("AI", r.section(0).?);
@@ -342,7 +346,6 @@ test "reload, restart and quit are built-in commands" {
     try t.expect(r.rows[0].kind != Kind.quit);
 }
 
-
 test "clip and cb open clipboard history" {
     const t = std.testing;
     const names = [_][]const u8{"Safari"};
@@ -357,10 +360,14 @@ test "clip and cb open clipboard history" {
 
 test "pm is a built-in command row" {
     var r: Results = .{};
-    r.buildPm();
+    r.buildPm(.pm);
     try std.testing.expectEqual(@as(usize, 1), r.n);
     try std.testing.expectEqual(Kind.pm, r.rows[0].kind);
     try std.testing.expectEqualStrings("Send to PM", Kind.pm.action());
+    r.buildPm(.af);
+    try std.testing.expectEqual(@as(usize, 1), r.n);
+    try std.testing.expectEqual(Kind.af, r.rows[0].kind);
+    try std.testing.expectEqualStrings("Send to Alfred", Kind.af.action());
 }
 
 test "queries are escaped into the address" {

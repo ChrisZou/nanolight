@@ -1,25 +1,48 @@
-//! Send a note to Chris's 项目经理 Grok Bot via its webhook.
-//! Keyword: `pm ` / `PM `. Return POSTs JSON `{"text":…}` using URL/key from
-//! `~/Library/Application Support/Nanolight/pm-webhook.json` (not in the repo).
+//! Send a note to one of Chris's Grok Bots via its webhook.
+//! Keywords: `pm ` (项目经理) and `af ` (Alfred). Return POSTs JSON
+//! `{"text":…}` using URL/key from
+//! `~/Library/Application Support/Nanolight/<bot>-webhook.json` (not in the repo).
 const std = @import("std");
 
 pub const max_body = 2000;
-pub const prefixes = [_][]const u8{ "pm ", "PM " };
 
-/// When `query` is a PM command, the body (may be empty); else null.
-pub fn take(query_in: []const u8) ?[]const u8 {
-    const q = std.mem.trim(u8, query_in, " \t");
-    for (prefixes) |p| {
-        if (startsIgnoreCase(q, p)) return std.mem.trim(u8, q[p.len..], " \t");
+/// The bots a note can go to.
+pub const Bot = enum {
+    /// 项目经理 (`pm `).
+    pm,
+    /// Alfred (`af `).
+    af,
+
+    /// What the row and the banner call it.
+    pub fn title(b: Bot) []const u8 {
+        return switch (b) {
+            .pm => "发给项目经理",
+            .af => "发给 Alfred",
+        };
     }
-    if (eqlIgnoreCase(q, "pm")) return "";
+};
+
+/// A note typed for a bot.
+pub const Note = struct { bot: Bot, body: []const u8 };
+
+/// When `query` is a bot command, the bot and the body (may be empty);
+/// else null. `pm` alone counts; `af` needs its space, so typing "af"
+/// still finds apps.
+pub fn take(query_in: []const u8) ?Note {
+    const q = std.mem.trimStart(u8, query_in, " \t");
+    for ([_]Bot{ .pm, .af }) |b| {
+        const word = @tagName(b);
+        if (q.len > word.len and startsIgnoreCase(q, word) and (q[word.len] == ' ' or q[word.len] == '\t'))
+            return .{ .bot = b, .body = std.mem.trim(u8, q[word.len..], " \t") };
+    }
+    if (eqlIgnoreCase(std.mem.trimEnd(u8, q, " \t"), "pm")) return .{ .bot = .pm, .body = "" };
     return null;
 }
 
-/// Absolute webhook config path into `buf`.
-pub fn configPath(buf: []u8, home: []const u8) []const u8 {
+/// Absolute webhook config path for `bot` into `buf`.
+pub fn configPath(buf: []u8, home: []const u8, bot: Bot) []const u8 {
     if (home.len == 0) return "";
-    return std.fmt.bufPrint(buf, "{s}/Library/Application Support/Nanolight/pm-webhook.json", .{home}) catch "";
+    return std.fmt.bufPrint(buf, "{s}/Library/Application Support/Nanolight/{s}-webhook.json", .{ home, @tagName(bot) }) catch "";
 }
 
 /// Seconds the webhook gets before the note counts as failed.
@@ -35,12 +58,12 @@ pub const Post = struct {
 /// Reads the webhook config and builds the POST for `body_in` into
 /// `arena`. Null when the note is empty or too long, or the config is
 /// missing or not https.
-pub fn prepare(arena: std.mem.Allocator, io: std.Io, home: []const u8, body_in: []const u8) ?Post {
+pub fn prepare(arena: std.mem.Allocator, io: std.Io, home: []const u8, bot: Bot, body_in: []const u8) ?Post {
     const body = std.mem.trim(u8, body_in, " \t\r\n");
     if (home.len == 0 or body.len == 0 or body.len > max_body) return null;
 
     var path_buf: [512]u8 = undefined;
-    const path = configPath(&path_buf, home);
+    const path = configPath(&path_buf, home, bot);
     if (path.len == 0) return null;
     const raw = std.Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(8 * 1024)) catch return null;
     return fromConfig(arena, raw, body);
@@ -48,10 +71,11 @@ pub fn prepare(arena: std.mem.Allocator, io: std.Io, home: []const u8, body_in: 
 
 /// `prepare` past reading the file: the config's JSON and the note.
 pub fn fromConfig(arena: std.mem.Allocator, raw: []const u8, body: []const u8) ?Post {
-    const Config = struct { url: []const u8, key: []const u8 };
+    // `senderKey` is what GoodDay's copy of the Alfred config calls it.
+    const Config = struct { url: []const u8, key: []const u8 = "", senderKey: []const u8 = "" };
     const cfg = std.json.parseFromSliceLeaky(Config, arena, raw, .{ .ignore_unknown_fields = true }) catch return null;
     if (!std.mem.startsWith(u8, cfg.url, "https://")) return null;
-    const key = stripCrLf(cfg.key);
+    const key = stripCrLf(if (cfg.key.len > 0) cfg.key else cfg.senderKey);
     if (key.len == 0) return null;
     const auth = if (std.mem.startsWith(u8, key, "Bearer "))
         key
@@ -64,17 +88,17 @@ pub fn fromConfig(arena: std.mem.Allocator, raw: []const u8, body: []const u8) ?
 
 /// A macOS banner saying whether it went, from a thread of its own (the
 /// panel never waits on osascript); failures are ignored.
-pub fn notify(gpa: std.mem.Allocator, io: std.Io, ok: bool) void {
-    const t = std.Thread.spawn(.{}, notifyNow, .{ gpa, io, ok }) catch return;
+pub fn notify(gpa: std.mem.Allocator, io: std.Io, bot: Bot, ok: bool) void {
+    const t = std.Thread.spawn(.{}, notifyNow, .{ gpa, io, bot, ok }) catch return;
     t.detach();
 }
 
-fn notifyNow(gpa: std.mem.Allocator, io: std.Io, ok: bool) void {
-    const script = if (ok)
-        \\display notification "已发送" with title "发给项目经理"
-    else
-        \\display notification "发送失败" with title "发给项目经理"
-    ;
+fn notifyNow(gpa: std.mem.Allocator, io: std.Io, bot: Bot, ok: bool) void {
+    var buf: [128]u8 = undefined;
+    const script = std.fmt.bufPrint(&buf, "display notification \"{s}\" with title \"{s}\"", .{
+        if (ok) "已发送" else "发送失败",
+        bot.title(),
+    }) catch return;
     const argv = [_][]const u8{ "/usr/bin/osascript", "-e", script };
     const result = std.process.run(gpa, io, .{
         .argv = &argv,
@@ -101,19 +125,34 @@ fn eqlIgnoreCase(a: []const u8, b: []const u8) bool {
 
 test "pm prefixes" {
     const t = std.testing;
-    try t.expectEqualStrings("推进 Nanolight", take("pm 推进 Nanolight").?);
-    try t.expectEqualStrings("hello", take("PM hello").?);
-    try t.expectEqualStrings("", take("pm").?);
-    try t.expectEqualStrings("", take("PM").?);
+    try t.expectEqualStrings("推进 Nanolight", take("pm 推进 Nanolight").?.body);
+    try t.expectEqual(Bot.pm, take("PM hello").?.bot);
+    try t.expectEqualStrings("hello", take("PM hello").?.body);
+    try t.expectEqualStrings("", take("pm").?.body);
+    try t.expectEqualStrings("", take("PM").?.body);
     try t.expect(take("pms") == null);
     try t.expect(take("p m hi") == null);
+}
+
+test "af prefixes go to Alfred; af alone still finds apps" {
+    const t = std.testing;
+    try t.expectEqual(Bot.af, take("af 明天提醒我交稿").?.bot);
+    try t.expectEqualStrings("明天提醒我交稿", take("af 明天提醒我交稿").?.body);
+    try t.expectEqualStrings("hi", take("AF hi").?.body);
+    try t.expectEqualStrings("", take("af ").?.body);
+    try t.expect(take("af") == null);
+    try t.expect(take("affinity") == null);
 }
 
 test "config path under Application Support" {
     var buf: [256]u8 = undefined;
     try std.testing.expectEqualStrings(
         "/Users/chris/Library/Application Support/Nanolight/pm-webhook.json",
-        configPath(&buf, "/Users/chris"),
+        configPath(&buf, "/Users/chris", .pm),
+    );
+    try std.testing.expectEqualStrings(
+        "/Users/chris/Library/Application Support/Nanolight/af-webhook.json",
+        configPath(&buf, "/Users/chris", .af),
     );
 }
 
@@ -126,6 +165,7 @@ test "a webhook POST carries the note as JSON and the key as a Bearer token" {
     try std.testing.expectEqualStrings("Bearer abc", post.auth);
     try std.testing.expectEqualStrings("{\"text\":\"say \\\"hi\\\"\"}", post.json);
     try std.testing.expectEqualStrings("Bearer xyz", fromConfig(a, "{\"url\":\"https://e.com\",\"key\":\"Bearer xyz\"}", "x").?.auth);
+    try std.testing.expectEqualStrings("Bearer s", fromConfig(a, "{\"url\":\"https://e.com\",\"senderKey\":\"s\"}", "x").?.auth);
     // Plain http, or no key: nothing is sent.
     try std.testing.expect(fromConfig(a, "{\"url\":\"http://e.com\",\"key\":\"k\"}", "x") == null);
     try std.testing.expect(fromConfig(a, "{\"url\":\"https://e.com\",\"key\":\" \"}", "x") == null);

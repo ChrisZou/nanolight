@@ -387,7 +387,6 @@ test "plain queries list Ask Codex only; Google rows are gone" {
     try std.testing.expectEqual(results.Kind.ai_ask, s.res.rows[0].kind);
 }
 
-
 const onboard = @import("onboard.zig");
 const shortcut = @import("shortcut.zig");
 
@@ -665,7 +664,6 @@ test "the panel never outgrows its window, which is never resized" {
     }
 }
 
-
 test "reload and quit are launcher commands" {
     const gpa = std.testing.allocator;
     var ix: Index = .init(gpa);
@@ -755,6 +753,11 @@ test "pm prefix lists send-to-PM row" {
     s.rebuild();
     try std.testing.expectEqual(results.Kind.pm, s.res.rows[0].kind);
     try std.testing.expectEqualStrings("hello", s.pm_body[0..s.pm_body_len]);
+    s.query.set("af 明早提醒我发视频");
+    s.rebuild();
+    try std.testing.expectEqual(@as(usize, 1), s.res.n);
+    try std.testing.expectEqual(results.Kind.af, s.res.rows[0].kind);
+    try std.testing.expectEqualStrings("明早提醒我发视频", s.pm_body[0..s.pm_body_len]);
 }
 
 test "on a PC the panel's keys are Ctrl's, and Settings says so" {

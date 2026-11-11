@@ -43,8 +43,8 @@ pub const Host = struct {
     restart: ?*const fn (ctx: *anyopaque) void = null,
     /// Quit Nanolight (`quit`).
     quit: ?*const fn (ctx: *anyopaque) void = null,
-    /// POST a PM note to the 项目经理 webhook (`pm ` / `PM `).
-    pm: ?*const fn (ctx: *anyopaque, body: []const u8) void = null,
+    /// POST a note to a Grok Bot's webhook (`pm ` 项目经理, `af ` Alfred).
+    pm: ?*const fn (ctx: *anyopaque, bot: @import("pm.zig").Bot, body: []const u8) void = null,
     /// Settings (the shortcut, login, sync, updates). Without it the
     /// screen still draws, and changes nothing the app keeps.
     settings: ?*const SettingsHost = null,
@@ -150,7 +150,7 @@ pub const Nanolight = struct {
     ai_text: []const u8 = "",
     /// Bumped each ask so a late answer is ignored.
     ai_gen: u32 = 0,
-    /// Body for the current `pm ` / `PM ` row.
+    /// Body for the current `pm ` / `af ` row.
     pm_body: [@import("pm.zig").max_body]u8 = undefined,
     pm_body_len: usize = 0,
     /// Settings, drawn in the panel in place of the rows.
@@ -418,12 +418,13 @@ pub const Nanolight = struct {
         if (h == s.built) return;
         s.built = h;
         s.web.n = 0;
-        if (@import("pm.zig").take(q)) |body| {
+        if (@import("pm.zig").take(q)) |note| {
+            const body = note.body;
             if (body.len <= s.pm_body.len) {
                 @memcpy(s.pm_body[0..body.len], body);
                 s.pm_body_len = body.len;
             } else s.pm_body_len = 0;
-            s.res.buildPm();
+            s.res.buildPm(note.bot);
             s.sel = 0;
             return;
         }
@@ -614,7 +615,7 @@ pub const Nanolight = struct {
             .clipboard => ui.text(c, "Clipboard History", .{ .size = 13.5, .weight = .medium, .color = p.text }),
             .restart => ui.text(c, "Restart Nanolight", .{ .size = 13.5, .weight = .medium, .color = p.text }),
             .quit => ui.text(c, "Quit Nanolight", .{ .size = 13.5, .weight = .medium, .color = p.text }),
-            .pm => ui.text(c, "发给项目经理", .{ .size = 13.5, .weight = .medium, .color = p.text }),
+            .pm, .af => ui.text(c, @import("pm.zig").Bot.title(if (r.kind == .af) .af else .pm), .{ .size = 13.5, .weight = .medium, .color = p.text }),
             .calc, .ai_answer => unreachable,
             .app => {
                 const a = s.index.apps.items[r.app];
@@ -664,7 +665,7 @@ pub const Nanolight = struct {
         }
         ui.spacer(c);
         if (i == s.sel) {
-            ui.text(c, if (r.kind == .app or r.kind == .settings or r.kind == .pic or r.kind == .file) "Open" else if (r.kind == .ai_answer) "Copy" else if (r.kind == .ai_ask) "Ask" else if (r.kind == .restart) "Restart" else if (r.kind == .quit) "Quit" else if (r.kind == .pm) "Send" else "Go", .{ .size = 12, .weight = .medium, .color = p.sub });
+            ui.text(c, if (r.kind == .app or r.kind == .settings or r.kind == .pic or r.kind == .file) "Open" else if (r.kind == .ai_answer) "Copy" else if (r.kind == .ai_ask) "Ask" else if (r.kind == .restart) "Restart" else if (r.kind == .quit) "Quit" else if (r.kind == .pm or r.kind == .af) "Send" else "Go", .{ .size = 12, .weight = .medium, .color = p.sub });
             ui.kbd(c, "↩");
         } else if (i < 9) ui.textf(c, .{ .size = 12, .weight = .medium, .color = p.sub.alpha(0.5), .tabular = true }, "{s}{d}", .{ results.mod, i + 1 });
     }
@@ -672,7 +673,6 @@ pub const Nanolight = struct {
     fn calcCard(s: *Nanolight, c: *ui.Context, p: Palette) void {
         @import("calc_card.zig").draw(c, p, s.query.text(), s.res.answer, s.res.hex, c.time - s.copied_at < 1.4);
     }
-
 
     fn aiCard(s: *Nanolight, c: *ui.Context, p: Palette) void {
         const box = ui.div(c).column().wFull().gap(8).px(4);
@@ -713,7 +713,7 @@ pub const Nanolight = struct {
             .clipboard => "clipboard",
             .restart => "arrow.clockwise",
             .quit => "power",
-            .pm => "paperplane",
+            .pm, .af => "paperplane",
             .calc => "plus.forwardslash.minus",
             .pic => "photo",
             .file => "doc",
@@ -798,11 +798,11 @@ pub const Nanolight = struct {
             .quit => {
                 if (s.host) |h| if (h.quit) |f| f(h.ctx);
             },
-            .pm => {
+            .pm, .af => {
                 if (s.pm_body_len == 0) return;
                 const h = s.host orelse return;
                 const f = h.pm orelse return;
-                f(h.ctx, s.pm_body[0..s.pm_body_len]);
+                f(h.ctx, if (r.kind == .af) .af else .pm, s.pm_body[0..s.pm_body_len]);
                 s.query.clear();
                 h.hide(h.ctx);
             },
