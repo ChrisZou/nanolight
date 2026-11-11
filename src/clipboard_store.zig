@@ -18,14 +18,82 @@ pub const Item = struct {
     /// UTF-8 bytes match exactly; binary image payloads aren't searched.
     pub fn matches(item: Item, query: []const u8) bool {
         if (query.len == 0) return true;
-        if (item.kind != .text and item.kind != .file_url) return false;
+        // A picture is found by what it is, as its title says ("Image: …"):
+        // "im", "image", "images", "img", "图片".
+        if (item.isImage()) return imageWord(query) or startsWithIgnoreCase("images", query);
+        if (item.kind == .file_url) {
+            if (fileWord(query) or startsWithIgnoreCase("files", query)) return true;
+            // By the files' names and folders as they read, not %-escaped.
+            var lines = std.mem.splitScalar(u8, item.data, '\n');
+            var buf: [4096]u8 = undefined;
+            while (lines.next()) |url| if (containsIgnoreCase(urlPath(&buf, url), query)) return true;
+            return false;
+        }
+        if (item.kind != .text) return false;
         if (query.len > item.data.len) return false;
         for (0..item.data.len - query.len + 1) |i| {
             if (std.ascii.eqlIgnoreCase(item.data[i..][0..query.len], query)) return true;
         }
         return false;
     }
+
+    pub fn isImage(item: Item) bool {
+        return item.kind == .png or item.kind == .tiff;
+    }
 };
+
+/// A word that asks for copied files alone.
+pub fn fileWord(query: []const u8) bool {
+    const q = std.mem.trim(u8, query, " ");
+    for ([_][]const u8{ "file", "files", "文件" }) |w| {
+        if (std.ascii.eqlIgnoreCase(q, w)) return true;
+    }
+    return false;
+}
+
+/// A file URL's path with its %-escapes decoded ("Design notes.pdf"), in
+/// `buf`; the URL's own bytes if it doesn't fit.
+pub fn urlPath(buf: []u8, url: []const u8) []const u8 {
+    var s = url;
+    if (std.mem.startsWith(u8, s, "file://")) s = s["file://".len..];
+    if (std.mem.indexOfScalar(u8, s, '%') == null or s.len > buf.len) return s;
+    var n: usize = 0;
+    var i: usize = 0;
+    while (i < s.len) : (i += 1) {
+        if (s[i] == '%' and i + 2 < s.len) {
+            if (std.fmt.parseInt(u8, s[i + 1 .. i + 3], 16)) |b| {
+                buf[n] = b;
+                n += 1;
+                i += 2;
+                continue;
+            } else |_| {}
+        }
+        buf[n] = s[i];
+        n += 1;
+    }
+    return buf[0..n];
+}
+
+fn containsIgnoreCase(s: []const u8, query: []const u8) bool {
+    if (query.len > s.len) return false;
+    for (0..s.len - query.len + 1) |i| {
+        if (std.ascii.eqlIgnoreCase(s[i..][0..query.len], query)) return true;
+    }
+    return false;
+}
+
+/// A word that asks for pictures alone: the list then shows nothing else.
+pub fn imageWord(query: []const u8) bool {
+    const q = std.mem.trim(u8, query, " ");
+    for ([_][]const u8{ "image", "images", "img", "pic", "pics", "picture", "pictures", "photo", "photos", "图片", "图", "截图" }) |w| {
+        if (std.ascii.eqlIgnoreCase(q, w)) return true;
+    }
+    return false;
+}
+
+fn startsWithIgnoreCase(s: []const u8, prefix: []const u8) bool {
+    return prefix.len <= s.len and std.ascii.eqlIgnoreCase(s[0..prefix.len], prefix);
+}
 
 pub const Limits = struct {
     max_items: usize = 200,
@@ -123,8 +191,12 @@ pub const Store = struct {
     pub fn filter(s: *const Store, gpa: std.mem.Allocator, query: []const u8, kind: ?Kind) ![]Item {
         var out: std.ArrayList(Item) = .empty;
         errdefer out.deinit(gpa);
+        const images = imageWord(query);
+        const files = fileWord(query);
         for ([_]bool{ true, false }) |pinned| for (s.items.items) |item| {
             if (item.pinned != pinned or (kind != null and item.kind != kind.?)) continue;
+            if (images and !item.isImage()) continue;
+            if (files and item.kind != .file_url) continue;
             if (item.matches(query)) try out.append(gpa, item);
         };
         return out.toOwnedSlice(gpa);
@@ -320,6 +392,35 @@ test "clipboard filters substrings and types, pins first without changing dedup 
     const unpinned = try s.filter(a, "", .text);
     defer a.free(unpinned);
     try t.expectEqual(last, unpinned[0].id);
+    // "image" (or "图片") lists the pictures alone; "ima" finds them too.
+    _ = try s.add(.text, "an image of a cat", 105);
+    const tiff = (try s.add(.tiff, "II*\x00", 106)).?;
+    for ([_][]const u8{ "image", "Images", "图片", "img" }) |word| {
+        const pics = try s.filter(a, word, null);
+        defer a.free(pics);
+        try t.expectEqual(@as(usize, 2), pics.len);
+        try t.expectEqual(tiff, pics[0].id);
+        try t.expectEqual(png, pics[1].id);
+    }
+    const typing = try s.filter(a, "ima", null);
+    defer a.free(typing);
+    try t.expectEqual(@as(usize, 3), typing.len);
+    // Files by their decoded names, several to a copy; "file" lists them alone.
+    const two = (try s.add(.file_url, "file:///Users/me/%E8%AE%BE%E8%AE%A1.pdf\nfile:///Users/me/notes.txt", 107)).?;
+    const by_name = try s.filter(a, "设计", null);
+    defer a.free(by_name);
+    try t.expectEqual(@as(usize, 1), by_name.len);
+    try t.expectEqual(two, by_name[0].id);
+    const notes = try s.filter(a, "NOTES.txt", null);
+    defer a.free(notes);
+    try t.expectEqual(two, notes[0].id);
+    for ([_][]const u8{ "file", "Files", "文件" }) |word| {
+        const only = try s.filter(a, word, null);
+        defer a.free(only);
+        try t.expectEqual(@as(usize, 2), only.len);
+        try t.expectEqual(two, only[0].id);
+        try t.expectEqual(file, only[1].id);
+    }
     const none = try s.filter(a, "longer than any of the stored text payloads here", null);
     defer a.free(none);
     try t.expectEqual(@as(usize, 0), none.len);

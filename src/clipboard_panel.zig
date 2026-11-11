@@ -235,6 +235,35 @@ pub const Panel = struct {
         return png;
     }
 
+    /// One file: its icon, name and folder. Several: the first's icon, how
+    /// many, and their names, as many as fit.
+    fn files(p: *Panel, c: *ui.Context, colors: anytype, item: history.Item, room_h: f32) void {
+        const n = std.mem.count(u8, item.data, "\n") + 1;
+        var lines = std.mem.splitScalar(u8, item.data, '\n');
+        const first = filePath(c, lines.first());
+        const box = ui.div(c).column().sizeFull().center().gap(10);
+        defer box.end();
+        if (p.icon(first)) |png| {
+            _ = ui.image(c, .{ .key = c.print("file-{s}", .{first}), .bytes = png, .max_width = 64, .max_height = 64, .radius = 0, .scale = 1 });
+        }
+        if (n == 1) {
+            ui.text(c, std.fs.path.basename(first), .{ .size = 14, .weight = .medium, .color = colors.text, .truncate = .middle });
+            ui.text(c, std.fs.path.dirname(first) orelse "", .{ .size = 12, .color = colors.sub, .truncate = .middle });
+            return;
+        }
+        ui.text(c, c.print("{d} Files", .{n}), .{ .size = 14, .weight = .medium, .color = colors.text });
+        const fit: usize = @intFromFloat(@max(1, @floor((room_h - 64 - 20 - 30) / 18)));
+        lines.reset();
+        var shown: usize = 0;
+        while (lines.next()) |url| : (shown += 1) {
+            if (shown + 1 == fit and n > fit) {
+                ui.text(c, c.print("and {d} more", .{n - shown}), .{ .size = 12, .color = colors.sub });
+                break;
+            }
+            ui.text(c, std.fs.path.basename(filePath(c, url)), .{ .size = 12, .color = colors.sub, .truncate = .middle });
+        }
+    }
+
     /// The selected copy, whole: a picture fitted, text from its start, a
     /// file by its icon and path; when it was copied underneath.
     fn preview(p: *Panel, c: *ui.Context, colors: anytype, item: history.Item) void {
@@ -251,16 +280,7 @@ pub const Panel = struct {
                     _ = ui.image(c, .{ .key = c.print("clip-{d}", .{item.id}), .bytes = item.data, .max_width = preview_w - 36, .max_height = room_h, .radius = 6, .scale = 2 });
                 },
                 .text => ui.text(c, whole(c, item.data), .{ .size = 13, .color = colors.text, .wrap = true, .line_height = 19, .max_lines = @intFromFloat(@floor(room_h / 19)) }),
-                .file_url => {
-                    const box = ui.div(c).column().sizeFull().center().gap(10);
-                    defer box.end();
-                    const path = filePath(c, item.data);
-                    if (p.icon(path)) |png| {
-                        _ = ui.image(c, .{ .key = c.print("file-{s}", .{path}), .bytes = png, .max_width = 64, .max_height = 64, .radius = 0, .scale = 1 });
-                    }
-                    ui.text(c, std.fs.path.basename(path), .{ .size = 14, .weight = .medium, .color = colors.text, .truncate = .middle });
-                    ui.text(c, std.fs.path.dirname(path) orelse "", .{ .size = 12, .color = colors.sub, .truncate = .middle });
-                },
+                .file_url => p.files(c, colors, item, room_h),
             }
         }
         const foot = ui.div(c).row().wFull().h(18).justifyCenter().itemsCenter();
@@ -279,7 +299,22 @@ fn title(c: *ui.Context, item: history.Item) []const u8 {
         const bytes = byteSize(&size, item.data.len);
         return if (imageSize(item.data)) |d| c.print("Image: {d}×{d} ({s})", .{ d[0], d[1], bytes }) else c.print("Image ({s})", .{bytes});
     }
-    if (item.kind == .file_url) return std.fs.path.basename(filePath(c, item.data));
+    if (item.kind == .file_url) {
+        const n = std.mem.count(u8, item.data, "\n") + 1;
+        var lines = std.mem.splitScalar(u8, item.data, '\n');
+        if (n == 1) return std.fs.path.basename(filePath(c, item.data));
+        // "3 Files: a.txt, b.png, c.pdf", as an image is titled by what it is.
+        var out: std.ArrayList(u8) = .empty;
+        const a = c.arena.allocator();
+        out.print(a, "{d} Files: ", .{n}) catch return "";
+        var i: usize = 0;
+        while (lines.next()) |url| : (i += 1) {
+            if (i > 0) out.appendSlice(a, ", ") catch break;
+            out.appendSlice(a, std.fs.path.basename(filePath(c, url))) catch break;
+            if (out.items.len > 300) break;
+        }
+        return out.items;
+    }
     const text = c.arena.allocator().dupe(u8, clip(std.mem.trimStart(u8, item.data, " \t\r\n"), 512)) catch return "";
     for (text) |*ch| if (ch.* < 32) {
         ch.* = ' ';
@@ -303,27 +338,19 @@ fn clip(s: []const u8, max: usize) []const u8 {
     return s[0..end];
 }
 
-/// A file URL's path, its %-escapes decoded ("Design notes.pdf").
+/// A file URL's path, its %-escapes decoded ("Design notes.pdf"). A
+/// reference URL Finder gave before copies were kept by path
+/// ("/.file/id=…") is looked up.
 fn filePath(c: *ui.Context, url: []const u8) []const u8 {
-    var s = url;
-    if (std.mem.startsWith(u8, s, "file://")) s = s["file://".len..];
-    if (std.mem.indexOfScalar(u8, s, '%') == null) return s;
-    const out = c.arena.allocator().alloc(u8, s.len) catch return s;
-    var n: usize = 0;
-    var i: usize = 0;
-    while (i < s.len) : (i += 1) {
-        if (s[i] == '%' and i + 2 < s.len) {
-            if (std.fmt.parseInt(u8, s[i + 1 .. i + 3], 16)) |b| {
-                out[n] = b;
-                n += 1;
-                i += 2;
-                continue;
-            } else |_| {}
-        }
-        out[n] = s[i];
-        n += 1;
+    if (builtin.os.tag == .macos and std.mem.startsWith(u8, url, "file:///.file/id=")) {
+        const objc = @import("nanoui").objc;
+        const ref = objc.msg(?objc.Object, objc.class("NSURL"), "URLWithString:", .{objc.nsString(url)});
+        const file = if (ref) |r| objc.msg(?objc.Object, r, "filePathURL", .{}) else null;
+        if (file) |f| return c.arena.allocator().dupe(u8, objc.fromNSString(objc.msg(?objc.Object, f, "path", .{}))) catch url;
+        return url;
     }
-    return out[0..n];
+    const buf = c.arena.allocator().alloc(u8, url.len) catch return url;
+    return history.urlPath(buf, url);
 }
 
 /// A picture's pixel size, from a PNG's or a TIFF's header.

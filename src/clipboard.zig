@@ -144,7 +144,18 @@ pub const Capture = struct {
         // Discard the entire snapshot and retry the new count next tick.
         if (objc.msg(objc.NSInteger, pb, "changeCount", .{}) != count or concealed(pb)) return;
         const source = frontmost();
-        for (copies.items) |copy| _ = try c.store.addFrom(copy.kind, copy.data, source, time);
+        // Files copied together are one copy, as they paste together.
+        var files: std.ArrayList(u8) = .empty;
+        var files_at: ?usize = null;
+        for (copies.items, 0..) |copy, i| if (copy.kind == .file_url) {
+            if (files_at == null) files_at = i else try files.append(arena.allocator(), '\n');
+            try files.appendSlice(arena.allocator(), copy.data);
+        };
+        for (copies.items, 0..) |copy, i| {
+            if (copy.kind == .file_url) {
+                if (files_at == i) _ = try c.store.addFrom(.file_url, files.items, source, time);
+            } else _ = try c.store.addFrom(copy.kind, copy.data, source, time);
+        }
     }
 };
 
@@ -157,9 +168,23 @@ fn frontmost() []const u8 {
     return objc.fromNSString(objc.msg(?objc.Object, url, "path", .{}));
 }
 
-/// Public NSPasteboard formats only. File URLs use an item, like Maccy;
-/// image bytes aren't transcoded or reduced to their display label.
+/// Public NSPasteboard formats only; image bytes aren't transcoded or
+/// reduced to their display label. Files go back as NSURLs, as Finder puts
+/// them: every app that takes a pasted file (Finder, Mail, WeChat) finds
+/// the flavor it reads.
 fn writeItem(pb: objc.Object, item: history.Item) !void {
+    if (item.kind == .file_url) {
+        const urls = objc.msg(objc.Object, objc.class("NSMutableArray"), "array", .{});
+        var lines = std.mem.splitScalar(u8, item.data, '\n');
+        while (lines.next()) |line| {
+            const url = objc.msg(?objc.Object, objc.class("NSURL"), "URLWithString:", .{objc.nsString(line)}) orelse continue;
+            objc.msg(void, urls, "addObject:", .{url});
+        }
+        if (objc.msg(objc.NSUInteger, urls, "count", .{}) == 0) return error.PasteboardWriteFailed;
+        _ = objc.msg(objc.NSInteger, pb, "clearContents", .{});
+        if (!objc.msg(objc.BOOL, pb, "writeObjects:", .{urls})) return error.PasteboardWriteFailed;
+        return;
+    }
     const name = objc.nsString(switch (item.kind) {
         .text => "public.utf8-plain-text",
         .png => "public.png",
@@ -194,9 +219,20 @@ fn read(gpa: std.mem.Allocator, item: objc.Object, max_bytes: usize) !?Copy {
         const len = objc.msg(objc.NSUInteger, data, "length", .{});
         if (len == 0 or len > max_bytes) continue;
         const bytes = objc.msg(?[*]const u8, data, "bytes", .{}) orelse continue;
+        if (t[0] == .file_url) return .{ .kind = .file_url, .data = try gpa.dupe(u8, filePathUrl(bytes[0..len])) };
         return .{ .kind = t[0], .data = try gpa.dupe(u8, bytes[0..len]) };
     }
     return null;
+}
+
+/// Finder copies a file as a reference ("file:///.file/id=6571367.4953…"):
+/// its path, as a URL that names the file wherever it is read.
+/// Valid until the autorelease pool is popped.
+fn filePathUrl(url: []const u8) []const u8 {
+    const ref = objc.msg(?objc.Object, objc.class("NSURL"), "URLWithString:", .{objc.nsString(url)}) orelse return url;
+    const path = objc.msg(?objc.Object, ref, "filePathURL", .{}) orelse return url;
+    const s = objc.fromNSString(objc.msg(?objc.Object, path, "absoluteString", .{}));
+    return if (s.len > 0) s else url;
 }
 
 fn concealed(item: objc.Object) bool {
@@ -257,6 +293,35 @@ test "restoring every stored representation preserves bytes on a private board" 
         const bytes = objc.msg([*]const u8, data, "bytes", .{});
         try t.expectEqualStrings(payload, bytes[0..len]);
     }
+}
+
+test "files copied together are one copy, kept by path, and paste back together" {
+    const t = std.testing;
+    const pool = objc.Pool.push();
+    defer pool.pop();
+    const pb = objc.msg(objc.Object, objc.class("NSPasteboard"), "pasteboardWithUniqueName", .{});
+    defer objc.msg(void, pb, "releaseGlobally", .{});
+    var c: Capture = .{ .store = .init(t.allocator), .io = t.io, .home = null };
+    defer c.deinit();
+    // As Finder copies two files: two NSURLs, by path here (a reference
+    // URL needs a real file; filePathURL leaves a path URL as it is).
+    const urls = objc.msg(objc.Object, objc.class("NSMutableArray"), "array", .{});
+    for ([_][]const u8{ "/tmp/a b.txt", "/tmp/设计.pdf" }) |path| {
+        objc.msg(void, urls, "addObject:", .{objc.msg(objc.Object, objc.class("NSURL"), "fileURLWithPath:", .{objc.nsString(path)})});
+    }
+    _ = objc.msg(objc.NSInteger, pb, "clearContents", .{});
+    _ = objc.msg(objc.BOOL, pb, "writeObjects:", .{urls});
+    try c.poll(pb, 100);
+    try t.expectEqual(@as(usize, 1), c.store.items.items.len);
+    const item = c.store.items.items[0];
+    try t.expectEqual(history.Kind.file_url, item.kind);
+    try t.expectEqualStrings("file:///tmp/a%20b.txt\nfile:///tmp/%E8%AE%BE%E8%AE%A1.pdf", item.data);
+    try writeItem(pb, item);
+    const back = objc.msg(objc.Object, pb, "pasteboardItems", .{});
+    try t.expectEqual(@as(objc.NSUInteger, 2), objc.msg(objc.NSUInteger, back, "count", .{}));
+    // Apps that read the old flavor (a list of paths) get both too.
+    const names = objc.msg(?objc.Object, pb, "propertyListForType:", .{objc.nsString("NSFilenamesPboardType")}) orelse return error.MissingFilenames;
+    try t.expectEqual(@as(objc.NSUInteger, 2), objc.msg(objc.NSUInteger, names, "count", .{}));
 }
 
 test "pasteboard polling captures text and image bytes and skips concealed snapshots" {
