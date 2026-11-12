@@ -45,6 +45,8 @@ pub const Host = struct {
     quit: ?*const fn (ctx: *anyopaque) void = null,
     /// POST a note to a Grok Bot's webhook (`pm ` 项目经理, `af ` Alfred, `gb ` Grok Bot).
     pm: ?*const fn (ctx: *anyopaque, bot: @import("pm.zig").Bot, body: []const u8) void = null,
+    /// Hand a task to Warp's agent in a Warp tab (`wp `).
+    warp: ?*const fn (ctx: *anyopaque, task: []const u8) void = null,
     /// Settings (the shortcut, login, sync, updates). Without it the
     /// screen still draws, and changes nothing the app keeps.
     settings: ?*const SettingsHost = null,
@@ -418,6 +420,15 @@ pub const Nanolight = struct {
         if (h == s.built) return;
         s.built = h;
         s.web.n = 0;
+        if (@import("warp.zig").take(q)) |task| {
+            if (task.len <= s.pm_body.len) {
+                @memcpy(s.pm_body[0..task.len], task);
+                s.pm_body_len = task.len;
+            } else s.pm_body_len = 0;
+            s.res.buildWarp();
+            s.sel = 0;
+            return;
+        }
         if (@import("pm.zig").take(q)) |note| {
             const body = note.body;
             if (body.len <= s.pm_body.len) {
@@ -616,6 +627,7 @@ pub const Nanolight = struct {
             .restart => ui.text(c, "Restart Nanolight", .{ .size = 13.5, .weight = .medium, .color = p.text }),
             .quit => ui.text(c, "Quit Nanolight", .{ .size = 13.5, .weight = .medium, .color = p.text }),
             .pm, .af, .gb => ui.text(c, r.kind.bot().?.title(), .{ .size = 13.5, .weight = .medium, .color = p.text }),
+            .warp => ui.text(c, "交给 Warp", .{ .size = 13.5, .weight = .medium, .color = p.text }),
             .calc, .ai_answer => unreachable,
             .app => {
                 const a = s.index.apps.items[r.app];
@@ -665,7 +677,7 @@ pub const Nanolight = struct {
         }
         ui.spacer(c);
         if (i == s.sel) {
-            ui.text(c, if (r.kind == .app or r.kind == .settings or r.kind == .pic or r.kind == .file) "Open" else if (r.kind == .ai_answer) "Copy" else if (r.kind == .ai_ask) "Ask" else if (r.kind == .restart) "Restart" else if (r.kind == .quit) "Quit" else if (r.kind.bot() != null) "Send" else "Go", .{ .size = 12, .weight = .medium, .color = p.sub });
+            ui.text(c, if (r.kind == .app or r.kind == .settings or r.kind == .pic or r.kind == .file) "Open" else if (r.kind == .ai_answer) "Copy" else if (r.kind == .ai_ask) "Ask" else if (r.kind == .restart) "Restart" else if (r.kind == .quit) "Quit" else if (r.kind.bot() != null) "Send" else if (r.kind == .warp) "Run" else "Go", .{ .size = 12, .weight = .medium, .color = p.sub });
             ui.kbd(c, "↩");
         } else if (i < 9) ui.textf(c, .{ .size = 12, .weight = .medium, .color = p.sub.alpha(0.5), .tabular = true }, "{s}{d}", .{ results.mod, i + 1 });
     }
@@ -714,6 +726,7 @@ pub const Nanolight = struct {
             .restart => "arrow.clockwise",
             .quit => "power",
             .pm, .af, .gb => "paperplane",
+            .warp => "terminal",
             .calc => "plus.forwardslash.minus",
             .pic => "photo",
             .file => "doc",
@@ -797,6 +810,14 @@ pub const Nanolight = struct {
             },
             .quit => {
                 if (s.host) |h| if (h.quit) |f| f(h.ctx);
+            },
+            .warp => {
+                if (s.pm_body_len == 0) return;
+                const h = s.host orelse return;
+                const f = h.warp orelse return;
+                f(h.ctx, s.pm_body[0..s.pm_body_len]);
+                s.query.clear();
+                h.hide(h.ctx);
             },
             .pm, .af, .gb => {
                 if (s.pm_body_len == 0) return;

@@ -15,6 +15,7 @@ test {
     _ = @import("file.zig");
     _ = @import("ai.zig");
     _ = @import("pm.zig");
+    _ = @import("warp.zig");
     _ = @import("promo_camera.zig");
     _ = @import("settings.zig");
     _ = @import("apps.zig");
@@ -762,6 +763,11 @@ test "pm prefix lists send-to-PM row" {
     s.rebuild();
     try std.testing.expectEqual(results.Kind.gb, s.res.rows[0].kind);
     try std.testing.expectEqualStrings("看看今天的 AI 新闻", s.pm_body[0..s.pm_body_len]);
+    s.query.set("wp 整理一下 Downloads");
+    s.rebuild();
+    try std.testing.expectEqual(@as(usize, 1), s.res.n);
+    try std.testing.expectEqual(results.Kind.warp, s.res.rows[0].kind);
+    try std.testing.expectEqualStrings("整理一下 Downloads", s.pm_body[0..s.pm_body_len]);
 }
 
 test "on a PC the panel's keys are Ctrl's, and Settings says so" {

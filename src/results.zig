@@ -25,6 +25,8 @@ pub const Kind = enum {
     af,
     /// Send a note to Grok Bot via webhook (`gb `).
     gb,
+    /// Hand a task to Warp's agent, in a Warp tab (`wp `).
+    warp,
     calc,
     app,
     /// A Picemon image hit (`Row.pic`).
@@ -48,6 +50,7 @@ pub const Kind = enum {
         return switch (k) {
             .clipboard => "Clipboard",
             .restart, .quit, .pm, .af, .gb => "Nanolight",
+            .warp => "Warp",
             .calc => "Calculator",
             .app => "Application",
             .pic => "Image",
@@ -67,6 +70,7 @@ pub const Kind = enum {
             .pm => "Send to PM",
             .af => "Send to Alfred",
             .gb => "Send to Grok Bot",
+            .warp => "Run in Warp",
             .calc => "Copy Answer",
             .app => "Open Application",
             .pic => "Open Image",
@@ -94,6 +98,7 @@ pub const Kind = enum {
         return switch (k) {
             .clipboard => "Clipboard",
             .restart, .quit, .pm, .af, .gb => "Nanolight",
+            .warp => "Warp",
             .calc => "Calculator",
             .app => if (suggested) "Suggestions" else "Applications",
             .pic => "Images",
@@ -228,6 +233,15 @@ pub const Results = struct {
         } });
     }
 
+    /// One "交给 Warp" row (from `wp `).
+    pub fn buildWarp(r: *Results) void {
+        r.n = 0;
+        r.suggested = false;
+        r.answer = "";
+        r.hex = "";
+        r.push(.{ .kind = .warp });
+    }
+
     /// "settings" and "preferences", the words people type for this.
     fn isSettings(query: []const u8) bool {
         return std.ascii.eqlIgnoreCase(query, "settings") or std.ascii.eqlIgnoreCase(query, "preferences");
@@ -254,7 +268,7 @@ pub fn url(buf: []u8, kind: Kind, query: []const u8) []const u8 {
         .ask_grok => "https://grok.com/?q=",
         .search_x => "https://x.com/search?f=live&q=",
         .search_web, .suggest => "https://www.google.com/search?q=",
-        .calc, .app, .settings, .clipboard, .restart, .quit, .pm, .af, .gb, .pic, .file, .ai_ask, .ai_answer => return "",
+        .calc, .app, .settings, .clipboard, .restart, .quit, .pm, .af, .gb, .warp, .pic, .file, .ai_ask, .ai_answer => return "",
     };
     var w: std.Io.Writer = .fixed(buf);
     w.writeAll(base) catch return "";

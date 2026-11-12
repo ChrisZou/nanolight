@@ -117,7 +117,7 @@ pub const Live = struct {
     fn host(l: *Live) view.Host {
         const bind = @import("settings_bind.zig");
         bind.box.ctx = l;
-        return .{ .ctx = l, .open = open, .hide = hide, .resize = resize, .suggest = ask, .preview = if (mac) showPage else null, .settings = &bind.box, .pic = picSearch, .file = fileSearch, .ai = aiAsk, .recenter = recenter, .restart = restartSelf, .quit = quitSelf, .pm = pmSend };
+        return .{ .ctx = l, .open = open, .hide = hide, .resize = resize, .suggest = ask, .preview = if (mac) showPage else null, .settings = &bind.box, .pic = picSearch, .file = fileSearch, .ai = aiAsk, .recenter = recenter, .restart = restartSelf, .quit = quitSelf, .pm = pmSend, .warp = warpRun };
     }
 
     fn open(ctx: *anyopaque, target: []const u8) void {
@@ -186,6 +186,20 @@ pub const Live = struct {
                 }
             }.f),
         }
+    }
+
+    /// Writes the Warp tab config for `task` and opens it; a banner if
+    /// it couldn't be written.
+    fn warpRun(ctx: *anyopaque, task: []const u8) void {
+        const l: *Live = @ptrCast(@alignCast(ctx));
+        const warp = @import("warp.zig");
+        var arena: std.heap.ArenaAllocator = .init(l.app.gpa);
+        defer arena.deinit();
+        if (!warp.prepare(arena.allocator(), l.app.io, l.home, task)) {
+            std.log.warn("nanolight: couldn't write the Warp tab config", .{});
+            return;
+        }
+        _ = nanoui.shell.openUrl(warp.url);
     }
 
     fn sent(l: *Live, bot: @import("pm.zig").Bot, r: nanoui.http.Response) void {
