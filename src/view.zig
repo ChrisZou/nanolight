@@ -43,7 +43,7 @@ pub const Host = struct {
     restart: ?*const fn (ctx: *anyopaque) void = null,
     /// Quit Nanolight (`quit`).
     quit: ?*const fn (ctx: *anyopaque) void = null,
-    /// POST a note to a Grok Bot's webhook (`pm ` 项目经理, `af ` Alfred).
+    /// POST a note to a Grok Bot's webhook (`pm ` 项目经理, `af ` Alfred, `gb ` Grok Bot).
     pm: ?*const fn (ctx: *anyopaque, bot: @import("pm.zig").Bot, body: []const u8) void = null,
     /// Settings (the shortcut, login, sync, updates). Without it the
     /// screen still draws, and changes nothing the app keeps.
@@ -615,7 +615,7 @@ pub const Nanolight = struct {
             .clipboard => ui.text(c, "Clipboard History", .{ .size = 13.5, .weight = .medium, .color = p.text }),
             .restart => ui.text(c, "Restart Nanolight", .{ .size = 13.5, .weight = .medium, .color = p.text }),
             .quit => ui.text(c, "Quit Nanolight", .{ .size = 13.5, .weight = .medium, .color = p.text }),
-            .pm, .af => ui.text(c, @import("pm.zig").Bot.title(if (r.kind == .af) .af else .pm), .{ .size = 13.5, .weight = .medium, .color = p.text }),
+            .pm, .af, .gb => ui.text(c, r.kind.bot().?.title(), .{ .size = 13.5, .weight = .medium, .color = p.text }),
             .calc, .ai_answer => unreachable,
             .app => {
                 const a = s.index.apps.items[r.app];
@@ -665,7 +665,7 @@ pub const Nanolight = struct {
         }
         ui.spacer(c);
         if (i == s.sel) {
-            ui.text(c, if (r.kind == .app or r.kind == .settings or r.kind == .pic or r.kind == .file) "Open" else if (r.kind == .ai_answer) "Copy" else if (r.kind == .ai_ask) "Ask" else if (r.kind == .restart) "Restart" else if (r.kind == .quit) "Quit" else if (r.kind == .pm or r.kind == .af) "Send" else "Go", .{ .size = 12, .weight = .medium, .color = p.sub });
+            ui.text(c, if (r.kind == .app or r.kind == .settings or r.kind == .pic or r.kind == .file) "Open" else if (r.kind == .ai_answer) "Copy" else if (r.kind == .ai_ask) "Ask" else if (r.kind == .restart) "Restart" else if (r.kind == .quit) "Quit" else if (r.kind.bot() != null) "Send" else "Go", .{ .size = 12, .weight = .medium, .color = p.sub });
             ui.kbd(c, "↩");
         } else if (i < 9) ui.textf(c, .{ .size = 12, .weight = .medium, .color = p.sub.alpha(0.5), .tabular = true }, "{s}{d}", .{ results.mod, i + 1 });
     }
@@ -713,7 +713,7 @@ pub const Nanolight = struct {
             .clipboard => "clipboard",
             .restart => "arrow.clockwise",
             .quit => "power",
-            .pm, .af => "paperplane",
+            .pm, .af, .gb => "paperplane",
             .calc => "plus.forwardslash.minus",
             .pic => "photo",
             .file => "doc",
@@ -798,11 +798,11 @@ pub const Nanolight = struct {
             .quit => {
                 if (s.host) |h| if (h.quit) |f| f(h.ctx);
             },
-            .pm, .af => {
+            .pm, .af, .gb => {
                 if (s.pm_body_len == 0) return;
                 const h = s.host orelse return;
                 const f = h.pm orelse return;
-                f(h.ctx, if (r.kind == .af) .af else .pm, s.pm_body[0..s.pm_body_len]);
+                f(h.ctx, r.kind.bot().?, s.pm_body[0..s.pm_body_len]);
                 s.query.clear();
                 h.hide(h.ctx);
             },

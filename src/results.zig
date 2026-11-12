@@ -23,6 +23,8 @@ pub const Kind = enum {
     pm,
     /// Send a note to Alfred via webhook (`af `).
     af,
+    /// Send a note to Grok Bot via webhook (`gb `).
+    gb,
     calc,
     app,
     /// A Picemon image hit (`Row.pic`).
@@ -45,7 +47,7 @@ pub const Kind = enum {
     pub fn label(k: Kind) []const u8 {
         return switch (k) {
             .clipboard => "Clipboard",
-            .restart, .quit, .pm, .af => "Nanolight",
+            .restart, .quit, .pm, .af, .gb => "Nanolight",
             .calc => "Calculator",
             .app => "Application",
             .pic => "Image",
@@ -64,6 +66,7 @@ pub const Kind = enum {
             .quit => "Quit Nanolight",
             .pm => "Send to PM",
             .af => "Send to Alfred",
+            .gb => "Send to Grok Bot",
             .calc => "Copy Answer",
             .app => "Open Application",
             .pic => "Open Image",
@@ -77,10 +80,20 @@ pub const Kind = enum {
         };
     }
 
+    /// The bot a send row goes to, if it is one.
+    pub fn bot(k: Kind) ?@import("pm.zig").Bot {
+        return switch (k) {
+            .pm => .pm,
+            .af => .af,
+            .gb => .gb,
+            else => null,
+        };
+    }
+
     fn section(k: Kind, suggested: bool) []const u8 {
         return switch (k) {
             .clipboard => "Clipboard",
-            .restart, .quit, .pm, .af => "Nanolight",
+            .restart, .quit, .pm, .af, .gb => "Nanolight",
             .calc => "Calculator",
             .app => if (suggested) "Suggestions" else "Applications",
             .pic => "Images",
@@ -211,6 +224,7 @@ pub const Results = struct {
         r.push(.{ .kind = switch (bot) {
             .pm => .pm,
             .af => .af,
+            .gb => .gb,
         } });
     }
 
@@ -240,7 +254,7 @@ pub fn url(buf: []u8, kind: Kind, query: []const u8) []const u8 {
         .ask_grok => "https://grok.com/?q=",
         .search_x => "https://x.com/search?f=live&q=",
         .search_web, .suggest => "https://www.google.com/search?q=",
-        .calc, .app, .settings, .clipboard, .restart, .quit, .pm, .af, .pic, .file, .ai_ask, .ai_answer => return "",
+        .calc, .app, .settings, .clipboard, .restart, .quit, .pm, .af, .gb, .pic, .file, .ai_ask, .ai_answer => return "",
     };
     var w: std.Io.Writer = .fixed(buf);
     w.writeAll(base) catch return "";
@@ -368,6 +382,10 @@ test "pm is a built-in command row" {
     try std.testing.expectEqual(@as(usize, 1), r.n);
     try std.testing.expectEqual(Kind.af, r.rows[0].kind);
     try std.testing.expectEqualStrings("Send to Alfred", Kind.af.action());
+    r.buildPm(.gb);
+    try std.testing.expectEqual(Kind.gb, r.rows[0].kind);
+    try std.testing.expectEqual(@import("pm.zig").Bot.gb, Kind.gb.bot().?);
+    try std.testing.expectEqualStrings("Send to Grok Bot", Kind.gb.action());
 }
 
 test "queries are escaped into the address" {

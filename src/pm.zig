@@ -1,5 +1,5 @@
 //! Send a note to one of Chris's Grok Bots via its webhook.
-//! Keywords: `pm ` (项目经理) and `af ` (Alfred). Return POSTs JSON
+//! Keywords: `pm ` (项目经理), `af ` (Alfred) and `gb ` (Grok Bot). Return POSTs JSON
 //! `{"text":…}` using URL/key from
 //! `~/Library/Application Support/Nanolight/<bot>-webhook.json` (not in the repo).
 const std = @import("std");
@@ -12,12 +12,15 @@ pub const Bot = enum {
     pm,
     /// Alfred (`af `).
     af,
+    /// Grok Bot (`gb `).
+    gb,
 
     /// What the row and the banner call it.
     pub fn title(b: Bot) []const u8 {
         return switch (b) {
             .pm => "发给项目经理",
             .af => "发给 Alfred",
+            .gb => "发给 Grok Bot",
         };
     }
 };
@@ -26,11 +29,11 @@ pub const Bot = enum {
 pub const Note = struct { bot: Bot, body: []const u8 };
 
 /// When `query` is a bot command, the bot and the body (may be empty);
-/// else null. `pm` alone counts; `af` needs its space, so typing "af"
-/// still finds apps.
+/// else null. `pm` alone counts; `af` and `gb` need their space, so
+/// typing "af" or "gb" still finds apps (Affinity, GarageBand).
 pub fn take(query_in: []const u8) ?Note {
     const q = std.mem.trimStart(u8, query_in, " \t");
-    for ([_]Bot{ .pm, .af }) |b| {
+    for (std.enums.values(Bot)) |b| {
         const word = @tagName(b);
         if (q.len > word.len and startsIgnoreCase(q, word) and (q[word.len] == ' ' or q[word.len] == '\t'))
             return .{ .bot = b, .body = std.mem.trim(u8, q[word.len..], " \t") };
@@ -142,6 +145,14 @@ test "af prefixes go to Alfred; af alone still finds apps" {
     try t.expectEqualStrings("", take("af ").?.body);
     try t.expect(take("af") == null);
     try t.expect(take("affinity") == null);
+}
+
+test "gb prefixes go to Grok Bot; gb alone still finds apps" {
+    const t = std.testing;
+    try t.expectEqual(Bot.gb, take("gb 查一下明天天气").?.bot);
+    try t.expectEqualStrings("查一下明天天气", take("GB 查一下明天天气").?.body);
+    try t.expect(take("gb") == null);
+    try t.expect(take("gba") == null);
 }
 
 test "config path under Application Support" {

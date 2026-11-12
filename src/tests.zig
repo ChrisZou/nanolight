@@ -758,6 +758,10 @@ test "pm prefix lists send-to-PM row" {
     try std.testing.expectEqual(@as(usize, 1), s.res.n);
     try std.testing.expectEqual(results.Kind.af, s.res.rows[0].kind);
     try std.testing.expectEqualStrings("明早提醒我发视频", s.pm_body[0..s.pm_body_len]);
+    s.query.set("gb 看看今天的 AI 新闻");
+    s.rebuild();
+    try std.testing.expectEqual(results.Kind.gb, s.res.rows[0].kind);
+    try std.testing.expectEqualStrings("看看今天的 AI 新闻", s.pm_body[0..s.pm_body_len]);
 }
 
 test "on a PC the panel's keys are Ctrl's, and Settings says so" {
