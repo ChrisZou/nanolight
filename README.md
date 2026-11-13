@@ -17,6 +17,7 @@ Apps, math, files, images, clipboard history and Ask Codex: one keystroke away. 
 - **Images via Picemon**: type `img ` or `pic ` plus a keyword. Picemon has no public CLI/URL scheme yet, so Nanolight queries its local SQLite index (`~/Library/Application Support/Picemon/picemon.db`) for OCR / description / tags / path. Return opens the file.
 - **Files via FSearch**: type `f `, `find `, or `file ` plus a name. Uses the installed [`fsearch`](https://github.com/noahdunnagan/fsearch) CLI/daemon (`~/.local/bin/fsearch`); Return opens the path.
 - **Ask Codex**: plain queries default to a local Codex ask (Return). Or type `ai ` / `ask ` plus a question. Return on the answer copies it.
+- **Warp agent**: type `wp ` plus a task. Runs Oz in a Warp tab in `~/code/ai/warp`, explicitly selecting Kimi K3.1 Pro from the configured 火山 Agent Plan endpoint.
 - **⌘1–⌘9** run a row at once; ↑ ↓ and ⌃N ⌃P move.
 - Lives in the menu bar: no Dock icon, and nothing drawn while it's idle.
 - **Restart or quit from the panel**: type `reload` / `restart` / `re`…, Chinese `重启` / `重载`, or `quit` / `退出` / `关掉`, then Return.

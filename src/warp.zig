@@ -1,5 +1,5 @@
 //! Hand a task to Warp's agent (`wp `): Return writes a Warp tab config
-//! whose pane runs `oz agent run -p '<task>'`, then opens it with
+//! whose pane runs `oz agent run --model <id> -p '<task>'`, then opens it with
 //! `warp://tab_config/nanolight_wp`, so the agent works in a Warp tab
 //! you can watch, in ~/code/ai/warp (made if missing). (Warp's URIs
 //! can't run a command themselves.)
@@ -9,6 +9,9 @@ pub const max_body = 2000;
 pub const config_name = "nanolight_wp";
 pub const url = "warp://tab_config/" ++ config_name;
 const oz = "/Applications/Warp.app/Contents/Resources/bin/oz";
+/// Kimi K3.1 Pro on the user's 火山 Agent Plan custom endpoint in Warp.
+/// Use its config ID; Oz's default does not follow the GUI model selection.
+const model_id = "246e79b7-de68-4e32-990a-be2dba2324da";
 /// Where the agent works, under home.
 pub const workdir = "/code/ai/warp";
 
@@ -31,7 +34,7 @@ pub fn configPath(buf: []u8, home: []const u8) []const u8 {
 pub fn config(arena: std.mem.Allocator, dir: []const u8, task: []const u8) ![]const u8 {
     // The shell command: the task single-quoted, ' as '\''.
     var cmd: std.Io.Writer.Allocating = .init(arena);
-    try cmd.writer.writeAll(oz ++ " agent run -p '");
+    try cmd.writer.writeAll(oz ++ " agent run --model " ++ model_id ++ " -p '");
     for (task) |ch| {
         if (ch == '\'') try cmd.writer.writeAll("'\\''") else try cmd.writer.writeByte(if (ch == '\n' or ch == '\r') ' ' else ch);
     }
@@ -85,13 +88,13 @@ test "wp prefixes; wp alone still finds apps" {
     try t.expect(take("wps") == null);
 }
 
-test "the tab config runs oz on the task, quoted for the shell and for TOML" {
+test "the tab config pins Volcano Kimi and quotes the task for the shell and TOML" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     const text = try config(arena.allocator(), "/Users/chris/code/ai/warp", "say \"it's\" a\\b");
     try std.testing.expectEqualStrings(
         "# Written by Nanolight for `wp `; replaced on each use.\nname = \"Nanolight\"\n\n[[panes]]\nid = \"main\"\ntype = \"terminal\"\ndirectory = \"/Users/chris/code/ai/warp\"\n" ++
-            "commands = [\"/Applications/Warp.app/Contents/Resources/bin/oz agent run -p 'say \\\"it'\\\\''s\\\" a\\\\b'\"]\n",
+            "commands = [\"/Applications/Warp.app/Contents/Resources/bin/oz agent run --model 246e79b7-de68-4e32-990a-be2dba2324da -p 'say \\\"it'\\\\''s\\\" a\\\\b'\"]\n",
         text,
     );
 }
