@@ -40,14 +40,7 @@ test "on the Mac the panel's first frame is where it settles (issue #9)" {
     try std.testing.expect(own[0].y < own[1].y);
 }
 
-fn findRow(t: *ui.Tester, s: *view.Nanolight, words: []const u8) void {
-    tests.press(t, &.{ .{ .command = .select_all }, .{ .command = .delete_backward }, .{ .insert = words } });
-    while (s.res.rows[s.sel].kind != .search_web) _ = t.shortcut(.{ .key = ui.Shortcut.down });
-}
-
-test "searches can open in the browser, ⌘↩ showing them in the panel (issue #10)" {
-    // This fork lists Ask Codex instead of Google / Grok / X rows.
-    if (true) return error.SkipZigTest;
+test "Shift+Enter searches the typed query regardless of the selected action" {
     const gpa = std.testing.allocator;
     var ix: Index = .init(gpa);
     defer ix.deinit();
@@ -61,19 +54,20 @@ test "searches can open in the browser, ⌘↩ showing them in the panel (issue 
     try t.init(gpa, .init(&s, view.Nanolight.view), .{ .width = view.width, .height = view.max_height, .dark = true });
     defer t.deinit();
     t.settle(1);
-    // Return: the browser, and the panel goes.
-    findRow(&t, &s, "pizza");
-    tests.press(&t, &.{.{ .command = .insert_newline }});
-    try std.testing.expectEqualStrings("https://www.google.com/search?q=pizza", web.probe.opened[0..web.probe.opened_len]);
-    try std.testing.expect(web.probe.hidden and web.page_len == null and !s.previewing);
-    // ⌘↩: the page in the panel, which stays.
+    tests.press(&t, &.{.{ .insert = "Saf" }});
+    try std.testing.expectEqual(@import("results.zig").Kind.app, s.res.rows[s.sel].kind);
+    try std.testing.expect(t.shortcut(.{ .key = ui.Shortcut.enter, .shift = true }));
+    try std.testing.expectEqualStrings("https://www.google.com/search?q=Saf", web.probe.opened[0..web.probe.opened_len]);
+    try std.testing.expect(web.probe.hidden and web.page_len == null);
     web.probe = .{};
+    s.searches_out = false;
     s.reveal();
     t.settle(1);
-    findRow(&t, &s, "pasta");
-    try std.testing.expect(t.shortcut(.{ .key = ui.Shortcut.enter, .cmd = true }));
-    try std.testing.expectEqualStrings("https://www.google.com/search?q=pasta", web.page[0..web.page_len.?]);
-    try std.testing.expect(!web.probe.hidden and web.probe.opened_len == 0 and s.previewing);
+    tests.press(&t, &.{ .{ .command = .select_all }, .{ .insert = "one & two" } });
+    try std.testing.expectEqual(@import("results.zig").Kind.ai_ask, s.res.rows[s.sel].kind);
+    try std.testing.expect(t.shortcut(.{ .key = ui.Shortcut.enter, .shift = true }));
+    try std.testing.expectEqualStrings("https://www.google.com/search?q=one+%26+two", web.probe.opened[0..web.probe.opened_len]);
+    try std.testing.expect(web.probe.hidden and web.page_len == null and !s.previewing);
 }
 
 test "Settings hides the menu bar icon and sends searches out (issues #8, #10)" {

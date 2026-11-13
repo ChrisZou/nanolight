@@ -118,7 +118,7 @@ pub const Live = struct {
     fn host(l: *Live) view.Host {
         const bind = @import("settings_bind.zig");
         bind.box.ctx = l;
-        return .{ .ctx = l, .open = open, .hide = hide, .resize = resize, .suggest = ask, .preview = if (mac) showPage else null, .settings = &bind.box, .pic = picSearch, .file = fileSearch, .ai = aiAsk, .recenter = recenter, .restart = restartSelf, .quit = quitSelf, .pm = pmSend, .warp = warpRun };
+        return .{ .ctx = l, .open = open, .hide = hide, .resize = resize, .suggest = ask, .preview = if (mac) showPage else null, .settings = &bind.box, .pic = picSearch, .file = fileSearch, .ai = aiAsk, .terminal_ai = if (mac) terminalAi else null, .recenter = recenter, .restart = restartSelf, .quit = quitSelf, .pm = pmSend, .warp = warpRun };
     }
 
     fn open(ctx: *anyopaque, target: []const u8) void {
@@ -342,6 +342,19 @@ pub const Live = struct {
         const l: *Live = @ptrCast(@alignCast(ctx));
         l.s.filesArrived(needle, hits);
         if (l.window) |w| w.redraw();
+    }
+
+    fn terminalAi(ctx: *anyopaque, question: []const u8) bool {
+        const l: *Live = @ptrCast(@alignCast(ctx));
+        @import("warp.zig").openCodex(l.app.gpa, l.app.io, l.home, question) catch |err| {
+            l.s.note = switch (err) {
+                error.CodexNotFound => "Codex not found",
+                error.WarpNotFound => "Warp Scripting not found",
+                else => "Couldn’t open Codex in Warp Scripting",
+            };
+            return false;
+        };
+        return true;
     }
 
     fn aiAsk(ctx: *anyopaque, question: []const u8) void {

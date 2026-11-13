@@ -16,7 +16,8 @@ Apps, math, files, images, clipboard history and Ask Codex: one keystroke away. 
 - **Does math**: `2^10 * 3` answers 3,072 (and `0xC00`). Return copies it.
 - **Images via Picemon**: type `img ` or `pic ` plus a keyword. Picemon has no public CLI/URL scheme yet, so Nanolight queries its local SQLite index (`~/Library/Application Support/Picemon/picemon.db`) for OCR / description / tags / path. Return opens the file.
 - **Files via FSearch**: type `f `, `find `, or `file ` plus a name. Uses the installed [`fsearch`](https://github.com/noahdunnagan/fsearch) CLI/daemon (`~/.local/bin/fsearch`); Return opens the path.
-- **Ask Codex**: plain queries default to a local Codex ask (Return). Or type `ai ` / `ask ` plus a question. Return on the answer copies it.
+- **Ask Codex**: Return on Ask Codex shows the answer in the launcher. On macOS, ⌘↩ opens the prompt in an interactive Codex session in a new Warp Scripting terminal tab.
+- **Web search**: press ⇧↩ in the main field to search Google for the text you typed in your default browser.
 - **Warp agent**: type `wp ` plus a task and press Return in Nanolight to send it in a new native Warp Agent conversation. Nanolight uses Warp Scripting when installed and otherwise opens the standard Warp app. Uses Warp's selected model and `~/code/ai/warp`. Allow Nanolight in macOS **Privacy & Security → Accessibility** for automatic paste; Warp Scripting is not required. The task remains on the clipboard. Typing, clicking, copying other content, or reopening Nanolight before submission cancels the handoff and preserves the task for retry.
 - **⌘1–⌘9** run a row at once; ↑ ↓ and ⌃N ⌃P move.
 - Lives in the menu bar: no Dock icon, and nothing drawn while it's idle.

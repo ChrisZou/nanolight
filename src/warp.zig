@@ -109,8 +109,13 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, home: []const u8, title: []const 
     cwd.createDirPath(io, dir) catch return error.ConfigurationFailed;
     cwd.createDirPath(io, config_dir) catch return error.ConfigurationFailed;
     cwd.writeFile(io, .{ .sub_path = path, .data = text }) catch return error.ConfigurationFailed;
+    try openTab(arena, io, edition.app, edition.url);
+    return edition;
+}
+
+fn openTab(arena: std.mem.Allocator, io: std.Io, app: []const u8, url: []const u8) Error!void {
     const result = std.process.run(arena, io, .{
-        .argv = &.{ "/usr/bin/open", "-a", edition.app, edition.url },
+        .argv = &.{ "/usr/bin/open", "-a", app, url },
         .stdout_limit = .limited(1024),
         .stderr_limit = .limited(4096),
         .timeout = .{ .deadline = .fromNow(io, .{ .raw = .fromMilliseconds(5000), .clock = .awake }) },
@@ -119,7 +124,73 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, home: []const u8, title: []const 
         .exited => |code| if (code != 0) return error.OpenFailed,
         else => return error.OpenFailed,
     }
-    return edition;
+}
+
+/// Run the interactive CLI in a real terminal. Warp sees only the generated
+/// script name in its command template; the prompt is a single literal argv.
+pub fn openCodex(gpa: std.mem.Allocator, io: std.Io, home: []const u8, question: []const u8) !void {
+    if (question.len == 0 or std.mem.indexOfScalar(u8, question, 0) != null) return error.BadTask;
+    std.Io.Dir.accessAbsolute(io, scripting.executable, .{}) catch return error.WarpNotFound;
+    var codex_buf: [512]u8 = undefined;
+    const codex = @import("ai.zig").findCodex(io, &codex_buf, home);
+    if (codex.len == 0) return error.CodexNotFound;
+    var arena_state: std.heap.ArenaAllocator = .init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var nonce: [16]u8 = undefined;
+    io.random(&nonce);
+    const name = try std.fmt.allocPrint(arena, "nanolight_codex_{x}", .{&nonce});
+    const script_path = try std.fmt.allocPrint(arena, "/tmp/{s}.sh", .{name});
+    const config_dir = try std.fs.path.join(arena, &.{ home, scripting.config_dir });
+    const filename = try std.fmt.allocPrint(arena, "{s}.toml", .{name});
+    const config_path = try std.fs.path.join(arena, &.{ config_dir, filename });
+    const dir = try std.fmt.allocPrint(arena, "{s}" ++ workdir, .{home});
+    const cwd = std.Io.Dir.cwd();
+    try cwd.createDirPath(io, dir);
+    try cwd.createDirPath(io, config_dir);
+
+    var script: std.Io.Writer.Allocating = .init(arena);
+    try script.writer.writeAll("/bin/rm -f -- \"$0\" ");
+    try shellArg(&script.writer, config_path);
+    try script.writer.writeAll("\nexec ");
+    try shellArg(&script.writer, codex);
+    try script.writer.writeAll(" -- ");
+    try shellArg(&script.writer, question);
+    try script.writer.writeByte('\n');
+
+    var config_text: std.Io.Writer.Allocating = .init(arena);
+    try config_text.writer.writeAll("name = \"Codex\"\n[[panes]]\nid = \"main\"\ntype = \"terminal\"\ndirectory = ");
+    try tomlString(&config_text.writer, dir);
+    try config_text.writer.print("\ncommands = [\"/bin/sh {s}\"]\nis_focused = true\n", .{script_path});
+
+    try writePrivate(io, script_path, script.written());
+    errdefer cwd.deleteFile(io, script_path) catch {};
+    try writePrivate(io, config_path, config_text.written());
+    errdefer cwd.deleteFile(io, config_path) catch {};
+    const url = try std.fmt.allocPrint(arena, "warposs://tab_config/{s}", .{name});
+    try openTab(arena, io, scripting.app, url);
+}
+
+fn shellArg(w: *std.Io.Writer, arg: []const u8) !void {
+    try w.writeByte('\'');
+    for (arg) |byte| {
+        if (byte == '\'') try w.writeAll("'\\''") else try w.writeByte(byte);
+    }
+    try w.writeByte('\'');
+}
+
+fn writePrivate(io: std.Io, path: []const u8, text: []const u8) !void {
+    const file = try std.Io.Dir.createFileAbsolute(io, path, .{ .exclusive = true, .permissions = .fromMode(0o600) });
+    defer file.close(io);
+    errdefer std.Io.Dir.deleteFileAbsolute(io, path) catch {};
+    try file.writeStreamingAll(io, text);
+}
+
+test "Codex prompt remains a literal shell argument" {
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    try shellArg(&out.writer, "what's \"$HOME\"?\n{{example}}");
+    try std.testing.expectEqualStrings("'what'\\''s \"$HOME\"?\n{{example}}'", out.written());
 }
 
 /// Only layout metadata goes in the config. All caller-provided strings are

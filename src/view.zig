@@ -36,6 +36,7 @@ pub const Host = struct {
     file: ?*const fn (ctx: *anyopaque, query: []const u8) void = null,
     /// Start a Codex one-shot; the answer lands in `Nanolight.aiDone`.
     ai: ?*const fn (ctx: *anyopaque, question: []const u8) void = null,
+    terminal_ai: ?*const fn (ctx: *anyopaque, question: []const u8) bool = null,
     /// Puts the panel back where it first opened (a double click on its
     /// background), forgetting where it was dragged.
     recenter: ?*const fn (ctx: *anyopaque) void = null,
@@ -111,8 +112,7 @@ pub const Nanolight = struct {
     /// The window fades in as it shows, the system's glass with it
     /// (panel_mac.zig): the panel has no entrance of its own (issue #9).
     window_fades: bool = false,
-    /// Return sends a Google search to the browser and ⌘↩ shows it in
-    /// the panel, the other way round from the default (issue #10).
+    /// Open Google searches in the default browser instead of the panel.
     searches_out: bool = false,
     /// Each showing gets a new one: the panel comes in again.
     shown: u32 = 0,
@@ -318,25 +318,35 @@ pub const Nanolight = struct {
         }
         // ⌘,: Settings, as on the Mac. The comma never reaches the field.
         if (c.shortcut(.{ .key = ',', .cmd = true })) return s.openSettings();
-        // ⌘↩: a search in the browser rather than in the panel.
-        if (c.shortcut(.{ .key = S.enter, .cmd = true })) s.activateOut(c);
-        // Enter / insertNewline activates before the header draws, so
-        // clipboard can replace the whole shell this frame.
-        var enter = c.input.key == .enter and !c.input.cmd;
-        if (!enter and !c.input.shift) {
-            for (c.input.ops) |op| {
-                switch (op) {
-                    .command => |cmd| {
-                        if (cmd == .insert_newline) enter = true;
-                    },
-                    else => {},
+        const words = std.mem.trim(u8, s.query.text(), " \t\r\n");
+        if (s.host) |h| if (h.terminal_ai) |launch| {
+            if (c.shortcut(.{ .key = S.enter, .cmd = true })) {
+                c.input.key = null;
+                c.input.ops = &.{};
+                const prompt = @import("ai.zig").take(words) orelse words;
+                if (prompt.len > 0 and launch(h.ctx, prompt)) {
+                    s.query.clear();
+                    h.hide(h.ctx);
                 }
-                if (enter) break;
+                return;
             }
-        }
-        if (enter) {
+        };
+        // AppKit may deliver Shift+Return as a text editing command.
+        const search_key = c.shortcut(.{ .key = S.enter, .shift = true });
+        const enter = c.input.key == .enter or for (c.input.ops) |op| {
+            if (op == .command and (op.command == .insert_newline or
+                (c.input.shift and op.command == .insert_line_break))) break true;
+        } else false;
+        if (search_key or (enter and !c.input.cmd and !c.input.ctrl and !c.input.alt)) {
             c.input.key = null;
             c.input.ops = &.{};
+            if (search_key or c.input.shift) {
+                if (words.len > 0) {
+                    const buf = c.arena.allocator().alloc(u8, "https://www.google.com/search?q=".len + 3 * words.len) catch return;
+                    s.go(results.url(buf, .search_web, words));
+                }
+                return;
+            }
             s.activate(c);
             return;
         }
@@ -896,17 +906,6 @@ pub const Nanolight = struct {
         } else {
             s.last_h = -1;
         };
-    }
-
-    /// ⌘↩ on the selected row: a search goes where Return doesn't send it.
-    fn activateOut(s: *Nanolight, c: *ui.Context) void {
-        if (s.res.n == 0) return;
-        const r = s.res.rows[@min(s.sel, s.res.n - 1)];
-        switch (r.kind) {
-            .search_web => s.search(s.query.text(), s.searches_out),
-            .suggest => s.search(s.web.get(r.web), s.searches_out),
-            else => s.activate(c),
-        }
     }
 
     /// Google's page for `words`: in the panel when `in_panel` and the host
