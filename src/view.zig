@@ -34,7 +34,9 @@ pub const Host = struct {
     /// Starts an FSearch file search (`f ` / `find ` / `file `); the hits
     /// arrive in `Nanolight.filesArrived`.
     file: ?*const fn (ctx: *anyopaque, query: []const u8) void = null,
-    /// Start a Codex one-shot; the answer lands in `Nanolight.aiDone`.
+    /// Prepare an empty session when the default action becomes an AI question.
+    prepare_ai: ?*const fn (ctx: *anyopaque) void = null,
+    /// Submit a Codex question; the answer lands in `Nanolight.aiDone`.
     ai: ?*const fn (ctx: *anyopaque, question: []const u8) void = null,
     terminal_ai: ?*const fn (ctx: *anyopaque, question: []const u8) bool = null,
     /// Puts the panel back where it first opened (a double click on its
@@ -439,6 +441,11 @@ pub const Nanolight = struct {
         const h = std.hash.Wyhash.hash(0, q);
         if (h == s.built) return;
         s.built = h;
+        defer {
+            if (s.ai_status == .ready and s.ai_question_len > 0 and s.res.n > 0 and s.res.rows[0].kind == .ai_ask) {
+                if (s.host) |host| if (host.prepare_ai) |prepare| prepare(host.ctx);
+            }
+        }
         s.web.n = 0;
         if (@import("warp.zig").take(q)) |task| {
             if (task.len <= s.pm_body.len) {

@@ -101,6 +101,7 @@ pub const Live = struct {
     clipboard_hotkey: bool = false,
     home: []const u8 = "",
     ai_job: ?*AiJob = null,
+    inline_codex: if (mac) @import("inline_codex.zig").Session else void = if (mac) .{} else {},
     warp_job: ?*WarpJob = null,
     /// Picemon and FSearch, searched off the main thread (lookup.zig).
     pic_lookup: ?PicLookup = null,
@@ -118,7 +119,7 @@ pub const Live = struct {
     fn host(l: *Live) view.Host {
         const bind = @import("settings_bind.zig");
         bind.box.ctx = l;
-        return .{ .ctx = l, .open = open, .hide = hide, .resize = resize, .suggest = ask, .preview = if (mac) showPage else null, .settings = &bind.box, .pic = picSearch, .file = fileSearch, .ai = aiAsk, .terminal_ai = if (mac) terminalAi else null, .recenter = recenter, .restart = restartSelf, .quit = quitSelf, .pm = pmSend, .warp = warpRun };
+        return .{ .ctx = l, .open = open, .hide = hide, .resize = resize, .suggest = ask, .preview = if (mac) showPage else null, .settings = &bind.box, .pic = picSearch, .file = fileSearch, .ai = aiAsk, .prepare_ai = if (mac) prepareAi else null, .terminal_ai = if (mac) terminalAi else null, .recenter = recenter, .restart = restartSelf, .quit = quitSelf, .pm = pmSend, .warp = warpRun };
     }
 
     fn open(ctx: *anyopaque, target: []const u8) void {
@@ -357,8 +358,18 @@ pub const Live = struct {
         return true;
     }
 
+    fn prepareAi(ctx: *anyopaque) void {
+        const l: *Live = @ptrCast(@alignCast(ctx));
+        l.inline_codex.warm();
+    }
+
     fn aiAsk(ctx: *anyopaque, question: []const u8) void {
         const l: *Live = @ptrCast(@alignCast(ctx));
+        if (mac) if (l.inline_codex.ask(question, l.s.ai_gen)) return;
+        l.aiAskExec(question);
+    }
+
+    pub fn aiAskExec(l: *Live, question: []const u8) void {
         if (l.ai_job != null) return;
         const job = l.app.gpa.create(AiJob) catch {
             l.s.aiDone(l.s.ai_gen, false, "Couldn't start Codex");
@@ -1000,6 +1011,7 @@ pub fn main(init: std.process.Init) !void {
         job.target.deinit();
         app.gpa.destroy(job);
     };
+    defer if (mac) live.inline_codex.stop();
     defer live.paste_target.deinit();
     defer s.clip.query.deinit();
     s.clip.store = &clips.store;
