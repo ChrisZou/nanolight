@@ -375,7 +375,7 @@ pub const Live = struct {
             return;
         };
         thread.detach();
-        nanoui.App.after(200, l, aiPoll);
+        nanoui.App.after(100, job, aiPoll);
     }
 
     /// A search's page in the panel, or (null) not.
@@ -871,6 +871,7 @@ const AiJob = struct {
     gen: u32,
     question: [@import("ai.zig").max_question]u8 = undefined,
     qlen: usize = 0,
+    turn: @import("ai.zig").TurnAnswer = .{},
     answer: [@import("ai.zig").max_answer]u8 = undefined,
     alen: usize = 0,
     ok: bool = false,
@@ -894,7 +895,7 @@ fn aiWorker(job: *AiJob) void {
         job.done.store(true, .release);
         return;
     }
-    const text_ans = ai.run(job.live.app.io, codex, job.question[0..job.qlen], temp.outPath(), &job.answer) catch |e| {
+    const text_ans = ai.run(job.live.app.io, codex, job.question[0..job.qlen], temp.outPath(), &job.answer, &job.turn) catch |e| {
         const msg: []const u8 = switch (e) {
             error.BadQuestion => "Empty question",
             error.TempFile => "Couldn't create temp file",
@@ -915,17 +916,22 @@ fn aiWorker(job: *AiJob) void {
 }
 
 fn aiPoll(ctx: ?*anyopaque) callconv(.c) void {
-    const l: *Live = @ptrCast(@alignCast(ctx.?));
-    const job = l.ai_job orelse return;
-    if (!job.done.load(.acquire)) {
-        nanoui.App.after(200, l, aiPoll);
+    const job: *AiJob = @ptrCast(@alignCast(ctx.?));
+    const l = job.live;
+    const done = job.done.load(.acquire);
+    if (l.ai_job == job) {
+        const len = job.turn.published.load(.acquire);
+        if (len > 0 or done) {
+            if (len > 0) {
+                l.s.aiDone(job.gen, true, job.turn.text[0..len]);
+            } else {
+                l.s.aiDone(job.gen, job.ok, job.answer[0..job.alen]);
+            }
+            l.ai_job = null;
+        }
         if (l.window) |w| w.redraw();
-        return;
     }
-    l.s.aiDone(job.gen, job.ok, job.answer[0..job.alen]);
-    l.ai_job = null;
-    l.app.gpa.destroy(job);
-    if (l.window) |w| w.redraw();
+    if (done) l.app.gpa.destroy(job) else nanoui.App.after(100, job, aiPoll);
 }
 
 /// A question to Google on its way: the words it is about.

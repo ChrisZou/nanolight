@@ -81,7 +81,7 @@ pub fn findCodex(io: std.Io, buf: []u8, home: []const u8) []const u8 {
 }
 
 pub fn buildArgv(
-    argv: *[12][]const u8,
+    argv: *[13][]const u8,
     codex: []const u8,
     out_path: []const u8,
     question: []const u8,
@@ -97,11 +97,61 @@ pub fn buildArgv(
         "never",
         "-o",
         out_path,
+        "--json",
+        "--",
         question,
-        "",
     };
-    return argv.*[0..11];
+    return argv;
 }
+
+/// The worker publishes one immutable answer once Codex confirms the turn.
+pub const TurnAnswer = struct {
+    text: [max_answer]u8 = undefined,
+    candidate_len: usize = 0,
+    published: std.atomic.Value(usize) = .init(0),
+
+    fn event(a: *TurnAnswer, line: []const u8) void {
+        if (a.published.load(.monotonic) != 0) return;
+        const Item = struct { type: []const u8, text: []const u8 = "", phase: ?[]const u8 = null };
+        const Event = struct { type: []const u8, item: ?Item = null };
+        const parsed = std.json.parseFromSlice(Event, std.heap.page_allocator, line, .{ .ignore_unknown_fields = true }) catch {
+            a.candidate_len = 0;
+            return;
+        };
+        defer parsed.deinit();
+        const e = parsed.value;
+        if (std.mem.eql(u8, e.type, "turn.completed")) {
+            a.published.store(a.candidate_len, .release);
+        } else if (std.mem.eql(u8, e.type, "item.completed")) {
+            const item = e.item orelse return;
+            a.candidate_len = 0;
+            if (!std.mem.eql(u8, item.type, "agent_message")) return;
+            if (item.phase) |phase| if (!std.mem.eql(u8, phase, "final_answer")) return;
+            const text = std.mem.trim(u8, item.text, " \t\r\n");
+            if (text.len > a.text.len) return;
+            @memcpy(a.text[0..text.len], text);
+            a.candidate_len = text.len;
+        } else if (std.mem.eql(u8, e.type, "turn.failed") or std.mem.eql(u8, e.type, "turn.started")) {
+            a.candidate_len = 0;
+        }
+    }
+
+    fn read(a: *TurnAnswer, file: std.Io.File, io: std.Io) void {
+        var buf: [max_answer * 8]u8 = undefined;
+        var reader = file.readerStreaming(io, &buf);
+        while (true) {
+            const line = reader.interface.takeDelimiter('\n') catch |err| switch (err) {
+                error.StreamTooLong => {
+                    a.candidate_len = 0;
+                    _ = reader.interface.discardDelimiterInclusive('\n') catch return;
+                    continue;
+                },
+                error.ReadFailed => return,
+            };
+            a.event(line orelse return);
+        }
+    }
+};
 
 /// Seconds Codex gets before its whole process group is killed.
 pub const timeout_s = 120;
@@ -115,9 +165,10 @@ pub fn run(
     question: []const u8,
     out_path: []const u8,
     answer_buf: []u8,
+    turn: *TurnAnswer,
 ) ![]const u8 {
     if (codex.len == 0 or question.len == 0 or question.len > max_question) return error.BadQuestion;
-    var argv_store: [12][]const u8 = undefined;
+    var argv_store: [13][]const u8 = undefined;
     const argv = buildArgv(&argv_store, codex, out_path, question);
 
     {
@@ -129,12 +180,13 @@ pub fn run(
     var child = std.process.spawn(io, .{
         .argv = argv,
         .stdin = .ignore,
-        .stdout = .ignore,
+        .stdout = .pipe,
         .stderr = .ignore,
         .pgid = 0,
     }) catch return error.SpawnFailed;
     var watch: Watchdog = .{ .pid = child.id.?, .io = io };
     const dog = std.Thread.spawn(.{}, Watchdog.run, .{&watch}) catch null;
+    turn.read(child.stdout.?, io);
     const term = child.wait(io) catch null;
     watch.done.store(true, .release);
     if (dog) |t| t.join();
@@ -194,11 +246,38 @@ test "temp paths are unique-shaped" {
 }
 
 test "argv is a non-interactive exec" {
-    var store: [12][]const u8 = undefined;
+    var store: [13][]const u8 = undefined;
     const argv = buildArgv(&store, "/opt/homebrew/bin/codex", "/tmp/out.txt", "ping");
     try std.testing.expectEqualStrings("exec", argv[1]);
     try std.testing.expectEqualStrings("--ephemeral", argv[2]);
     try std.testing.expectEqualStrings("-o", argv[8]);
     try std.testing.expectEqualStrings("/tmp/out.txt", argv[9]);
-    try std.testing.expectEqualStrings("ping", argv[10]);
+    try std.testing.expectEqualStrings("--json", argv[10]);
+    try std.testing.expectEqualStrings("--", argv[11]);
+    try std.testing.expectEqualStrings("ping", argv[12]);
+}
+
+test "publish only the completed turn and never overwrite the published answer" {
+    var a: TurnAnswer = .{};
+    a.event(
+        \\{"type":"item.completed","item":{"type":"agent_message","text":"draft"}}
+    );
+    try std.testing.expectEqual(@as(usize, 0), a.published.load(.acquire));
+    a.event(
+        \\{"type":"turn.failed"}
+    );
+    a.event(
+        \\{"type":"turn.completed"}
+    );
+    try std.testing.expectEqual(@as(usize, 0), a.published.load(.acquire));
+    a.event(
+        \\{"type":"item.completed","item":{"type":"agent_message","text":"answer"}}
+    );
+    a.event(
+        \\{"type":"turn.completed"}
+    );
+    a.event(
+        \\{"type":"item.completed","item":{"type":"agent_message","text":"later"}}
+    );
+    try std.testing.expectEqualStrings("answer", a.text[0..a.published.load(.acquire)]);
 }
