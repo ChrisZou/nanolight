@@ -25,7 +25,7 @@ pub const Kind = enum {
     af,
     /// Send a note to Grok Bot via webhook (`gb `).
     gb,
-    /// Hand a task to Warp's agent, in a Warp tab (`wp `).
+    /// Open a native Warp Agent conversation with a staged task (`wp `).
     warp,
     calc,
     app,
@@ -70,7 +70,7 @@ pub const Kind = enum {
             .pm => "Send to PM",
             .af => "Send to Alfred",
             .gb => "Send to Grok Bot",
-            .warp => "Run in Warp",
+            .warp => "Open Warp Agent",
             .calc => "Copy Answer",
             .app => "Open Application",
             .pic => "Open Image",

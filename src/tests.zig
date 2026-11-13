@@ -52,6 +52,7 @@ pub const Probe = struct {
     opened: [256]u8 = undefined,
     opened_len: usize = 0,
     hidden: bool = false,
+    warp_accepted: bool = false,
 
     fn open(ctx: *anyopaque, target: []const u8) void {
         const p: *Probe = @ptrCast(@alignCast(ctx));
@@ -61,6 +62,11 @@ pub const Probe = struct {
     fn hide(ctx: *anyopaque) void {
         const p: *Probe = @ptrCast(@alignCast(ctx));
         p.hidden = true;
+    }
+    fn warp(ctx: *anyopaque, task: []const u8) bool {
+        const p: *Probe = @ptrCast(@alignCast(ctx));
+        open(ctx, task);
+        return p.warp_accepted;
     }
 };
 
@@ -224,6 +230,29 @@ const mac_starters = [_][]const u8{ "Safari", "Notes", "Calendar", "System Setti
 pub fn press(t: *ui.Tester, ops: []const ui.TextOp) void {
     t.textOps(ops);
     t.settle(1);
+}
+
+test "a busy Warp handoff keeps the task available for retry" {
+    const gpa = std.testing.allocator;
+    var ix: Index = .init(gpa);
+    defer ix.deinit();
+    var probe: Probe = .{};
+    var s: view.Nanolight = .{ .index = &ix };
+    defer s.query.deinit();
+    s.host = .{ .ctx = &probe, .open = Probe.open, .hide = Probe.hide, .warp = Probe.warp };
+    s.query.set("wp 整理 Downloads");
+    s.rebuild();
+    var t: ui.Tester = undefined;
+    try t.init(gpa, .init(&s, view.Nanolight.view), .{ .width = view.width, .height = 480 });
+    defer t.deinit();
+    s.activate(&t.ctx);
+    try std.testing.expectEqualStrings("整理 Downloads", probe.opened[0..probe.opened_len]);
+    try std.testing.expectEqualStrings("wp 整理 Downloads", s.query.text());
+    try std.testing.expect(!probe.hidden);
+    probe.warp_accepted = true;
+    s.activate(&t.ctx);
+    try std.testing.expectEqualStrings("", s.query.text());
+    try std.testing.expect(probe.hidden);
 }
 
 test "the panel finds, moves, answers and hands off" {

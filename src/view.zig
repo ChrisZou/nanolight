@@ -45,8 +45,8 @@ pub const Host = struct {
     quit: ?*const fn (ctx: *anyopaque) void = null,
     /// POST a note to a Grok Bot's webhook (`pm ` 项目经理, `af ` Alfred, `gb ` Grok Bot).
     pm: ?*const fn (ctx: *anyopaque, bot: @import("pm.zig").Bot, body: []const u8) void = null,
-    /// Hand a task to Warp's agent in a Warp tab (`wp `).
-    warp: ?*const fn (ctx: *anyopaque, task: []const u8) void = null,
+    /// Stage a task in Warp's native Agent; false leaves the query for retry.
+    warp: ?*const fn (ctx: *anyopaque, task: []const u8) bool = null,
     /// Settings (the shortcut, login, sync, updates). Without it the
     /// screen still draws, and changes nothing the app keeps.
     settings: ?*const SettingsHost = null,
@@ -677,7 +677,7 @@ pub const Nanolight = struct {
         }
         ui.spacer(c);
         if (i == s.sel) {
-            ui.text(c, if (r.kind == .app or r.kind == .settings or r.kind == .pic or r.kind == .file) "Open" else if (r.kind == .ai_answer) "Copy" else if (r.kind == .ai_ask) "Ask" else if (r.kind == .restart) "Restart" else if (r.kind == .quit) "Quit" else if (r.kind.bot() != null) "Send" else if (r.kind == .warp) "Run" else "Go", .{ .size = 12, .weight = .medium, .color = p.sub });
+            ui.text(c, if (r.kind == .app or r.kind == .settings or r.kind == .pic or r.kind == .file or r.kind == .warp) "Open" else if (r.kind == .ai_answer) "Copy" else if (r.kind == .ai_ask) "Ask" else if (r.kind == .restart) "Restart" else if (r.kind == .quit) "Quit" else if (r.kind.bot() != null) "Send" else "Go", .{ .size = 12, .weight = .medium, .color = p.sub });
             ui.kbd(c, "↩");
         } else if (i < 9) ui.textf(c, .{ .size = 12, .weight = .medium, .color = p.sub.alpha(0.5), .tabular = true }, "{s}{d}", .{ results.mod, i + 1 });
     }
@@ -815,7 +815,7 @@ pub const Nanolight = struct {
                 if (s.pm_body_len == 0) return;
                 const h = s.host orelse return;
                 const f = h.warp orelse return;
-                f(h.ctx, s.pm_body[0..s.pm_body_len]);
+                if (!f(h.ctx, s.pm_body[0..s.pm_body_len])) return;
                 s.query.clear();
                 h.hide(h.ctx);
             },

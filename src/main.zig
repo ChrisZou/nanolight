@@ -101,6 +101,7 @@ pub const Live = struct {
     clipboard_hotkey: bool = false,
     home: []const u8 = "",
     ai_job: ?*AiJob = null,
+    warp_job: ?*WarpJob = null,
     /// Picemon and FSearch, searched off the main thread (lookup.zig).
     pic_lookup: ?PicLookup = null,
     file_lookup: ?FileLookup = null,
@@ -188,18 +189,22 @@ pub const Live = struct {
         }
     }
 
-    /// Writes the Warp tab config for `task` and opens it; a banner if
-    /// it couldn't be written.
-    fn warpRun(ctx: *anyopaque, task: []const u8) void {
+    /// Opens a native Warp Agent conversation and stages its first prompt.
+    fn warpRun(ctx: *anyopaque, task: []const u8) bool {
         const l: *Live = @ptrCast(@alignCast(ctx));
-        const warp = @import("warp.zig");
-        var arena: std.heap.ArenaAllocator = .init(l.app.gpa);
-        defer arena.deinit();
-        if (!warp.prepare(arena.allocator(), l.app.io, l.home, task)) {
-            std.log.warn("nanolight: couldn't write the Warp tab config", .{});
-            return;
-        }
-        _ = nanoui.shell.openUrl(warp.url);
+        if (l.warp_job != null or task.len == 0 or task.len > @import("warp.zig").max_body) return false;
+        const job = l.app.gpa.create(WarpJob) catch return false;
+        job.* = .{ .live = l, .len = task.len };
+        @memcpy(job.task[0..task.len], task);
+        l.warp_job = job;
+        const thread = std.Thread.spawn(.{}, warpWorker, .{job}) catch {
+            l.warp_job = null;
+            l.app.gpa.destroy(job);
+            return false;
+        };
+        job.thread = thread;
+        nanoui.App.after(100, l, warpPoll);
+        return true;
     }
 
     fn sent(l: *Live, bot: @import("pm.zig").Bot, r: nanoui.http.Response) void {
@@ -734,6 +739,60 @@ pub const Live = struct {
     }
 };
 
+/// A native Warp handoff in flight; never runs an Oz agent or submits input.
+const WarpJob = struct {
+    live: *Live,
+    task: [@import("warp.zig").max_body]u8 = undefined,
+    len: usize,
+    thread: ?std.Thread = null,
+    failed: bool = false,
+    done: std.atomic.Value(bool) = .init(false),
+};
+
+fn warpWorker(job: *WarpJob) void {
+    const l = job.live;
+    @import("warp.zig").run(l.app.gpa, l.app.io, job.task[0..job.len]) catch |err| {
+        job.failed = true;
+        std.log.warn("nanolight: Warp handoff failed: {s}", .{@errorName(err)});
+        const message: []const u8 = switch (err) {
+            error.ScriptingDisabled => "请在 Warp → Settings → Scripting 中开启 Enabled",
+            error.AmbiguousInstance, error.AmbiguousTarget => "无法确定目标 Warp 窗口，请重试",
+            error.WarpNotFound => "未找到 Warp，请先安装 Warp",
+            error.TargetChanged, error.MissingTarget => "Warp 对话已切换，请重试",
+            error.BadTask, error.InputRejected => "任务包含不支持的控制字符",
+            else => "未能填入 Warp 对话，请重试",
+        };
+        var arena: std.heap.ArenaAllocator = .init(l.app.gpa);
+        defer arena.deinit();
+        const script = std.fmt.allocPrint(arena.allocator(), "display notification \"{s}\" with title \"Nanolight\"", .{message}) catch return job.done.store(true, .release);
+        _ = std.process.run(arena.allocator(), l.app.io, .{
+            .argv = &.{ "/usr/bin/osascript", "-e", script },
+            .stdout_limit = .limited(1024),
+            .stderr_limit = .limited(1024),
+            .create_no_window = true,
+            .timeout = .{ .deadline = .fromNow(l.app.io, .{ .raw = .fromMilliseconds(3000), .clock = .awake }) },
+        }) catch {};
+    };
+    job.done.store(true, .release);
+}
+
+fn warpPoll(ctx: ?*anyopaque) callconv(.c) void {
+    const l: *Live = @ptrCast(@alignCast(ctx.?));
+    const job = l.warp_job orelse return;
+    if (!job.done.load(.acquire)) return nanoui.App.after(100, l, warpPoll);
+    if (job.thread) |thread| thread.join();
+    // Keep a failed task available for retry without replacing a newer query.
+    if (job.failed and l.s.query.text().len == 0) {
+        var text: [@import("warp.zig").max_body + 3]u8 = undefined;
+        const query = std.fmt.bufPrint(&text, "wp {s}", .{job.task[0..job.len]}) catch "";
+        l.s.query.set(query);
+        l.s.rebuild();
+        if (l.window) |w| w.redraw();
+    }
+    l.warp_job = null;
+    l.app.gpa.destroy(job);
+}
+
 /// A Codex one-shot in flight.
 const AiJob = struct {
     live: *Live,
@@ -858,6 +917,10 @@ pub fn main(init: std.process.Init) !void {
     var clips: clipboard.Capture = .{ .store = .init(init.gpa), .io = init.io, .home = init.environ_map.get("HOME") };
     defer clips.deinit();
     var live: Live = .{ .app = app, .s = &s, .o = &o, .kv = kv, .clipboard = &clips, .choice = shortcut.load(kv, init.gpa), .home = init.environ_map.get("HOME") orelse "" };
+    defer if (live.warp_job) |job| {
+        if (job.thread) |thread| thread.join();
+        app.gpa.destroy(job);
+    };
     defer live.paste_target.deinit();
     defer s.clip.query.deinit();
     s.clip.store = &clips.store;
