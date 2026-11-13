@@ -36,6 +36,20 @@ fn installedEdition(io: std.Io) Error!Edition {
 }
 const config_name = "nanolight_wp";
 const workdir = "/code/ai/warp";
+pub fn matchesPrompt(value: []const u8, task: []const u8) bool {
+    const prefix = "~" ++ workdir ++ " ";
+    return task.len > 0 and std.mem.startsWith(u8, value, prefix) and
+        std.mem.eql(u8, value[prefix.len..], task);
+}
+
+test "only submit the exact prompt in the expected Warp input" {
+    try std.testing.expect(matchesPrompt("~/code/ai/warp 只回复 OK", "只回复 OK"));
+    try std.testing.expect(!matchesPrompt("~/code/ai/warp earlier OK", "OK"));
+    try std.testing.expect(!matchesPrompt("~/code/ai/warp OK?", "OK"));
+    try std.testing.expect(!matchesPrompt("~/other OK", "OK"));
+    try std.testing.expect(!matchesPrompt("~/code/ai/warp ", ""));
+}
+
 var busy: std.atomic.Value(bool) = .init(false);
 
 pub const Error = error{

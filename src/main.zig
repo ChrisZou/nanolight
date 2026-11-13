@@ -762,6 +762,7 @@ const WarpJob = struct {
     edition: @import("warp.zig").Edition = undefined,
     attempts: u8 = 0,
     matched: u8 = 0,
+    pasted: bool = false,
     cancelled: bool = false,
     thread: ?std.Thread = null,
     failed: bool = false,
@@ -814,7 +815,17 @@ fn warpPoll(ctx: ?*anyopaque) callconv(.c) void {
     if (job.target.app == null) {
         _ = job.target.rememberBundle(job.edition.bundle_id, job.edition.app);
     }
-    if (job.target.windowMatches(job.title[0..job.title_len])) {
+    const title = job.title[0..job.title_len];
+    if (job.pasted) {
+        if (!job.target.windowMatches(title)) return warpFinish(l, true);
+        if (!job.target.hasWarpPrompt(job.task[0..job.len]))
+            return nanoui.App.after(100, l, warpPoll);
+        if (!job.activity.unchanged() or nanoui.clipboard.changeCount() != job.clipboard_count)
+            return warpFinish(l, true);
+        job.target.submit() catch return warpFinish(l, true);
+        return warpFinish(l, false);
+    }
+    if (job.target.windowMatches(title)) {
         job.matched += 1;
         // Allow the newly focused Agent to finish creating its input. The title
         // must remain exact; no blind paste into a previously active session.
@@ -828,11 +839,12 @@ fn warpPoll(ctx: ?*anyopaque) callconv(.c) void {
                 return warpFinish(l, true);
             const own_count = nanoui.clipboard.changeCount();
             // Recheck after touching the pasteboard, immediately before the
-            // process-addressed Cmd+V. Never send Return or retry the event.
+            // process-addressed Cmd+V. Post the paste only once.
             if (!job.target.windowMatches(job.title[0..job.title_len]) or !job.activity.unchanged() or nanoui.clipboard.changeCount() != own_count)
                 return warpFinish(l, true);
             job.target.send() catch return warpFinish(l, true);
-            return warpFinish(l, false);
+            job.pasted = true;
+            job.clipboard_count = own_count;
         }
     } else if (job.matched != 0) {
         return warpFinish(l, true);

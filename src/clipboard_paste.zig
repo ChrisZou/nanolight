@@ -174,14 +174,39 @@ pub const Target = struct {
         return CGEventSourceFlagsState(1) & ((1 << 17) | (1 << 18) | (1 << 19) | (1 << 20)) == 0;
     }
 
+    /// The native Warp surface reports the working directory followed by the
+    /// editor contents. Only submit after Warp has consumed this exact paste.
+    pub fn hasWarpPrompt(t: *const Target, prompt: []const u8) bool {
+        if (!t.ready()) return false;
+        const app = AXUIElementCreateApplication(objc.msg(i32, t.app.?, "processIdentifier", .{})) orelse return false;
+        defer CFRelease(app);
+        _ = AXUIElementSetMessagingTimeout(app, 0.1);
+        const focused = axAttribute(app, "AXFocusedUIElement") orelse return false;
+        defer CFRelease(focused);
+        const role = axAttribute(focused, "AXRole") orelse return false;
+        defer CFRelease(role);
+        if (!std.mem.eql(u8, axString(role) orelse return false, "AXTextArea")) return false;
+        const value = axAttribute(focused, "AXValue") orelse return false;
+        defer CFRelease(value);
+        return @import("warp.zig").matchesPrompt(axString(value) orelse return false, prompt);
+    }
+
     pub fn send(t: *const Target) !void {
+        try t.postKey(9, (1 << 20) | 0x8);
+    }
+
+    pub fn submit(t: *const Target) !void {
+        try t.postKey(36, 0);
+    }
+
+    fn postKey(t: *const Target, code: u16, flags: u64) !void {
         if (!t.ready() or !trusted(false)) return error.PasteUnavailable;
-        const down = CGEventCreateKeyboardEvent(null, 9, true) orelse return error.EventUnavailable;
+        const down = CGEventCreateKeyboardEvent(null, code, true) orelse return error.EventUnavailable;
         defer CFRelease(down);
-        const up = CGEventCreateKeyboardEvent(null, 9, false) orelse return error.EventUnavailable;
+        const up = CGEventCreateKeyboardEvent(null, code, false) orelse return error.EventUnavailable;
         defer CFRelease(up);
-        CGEventSetFlags(down, (1 << 20) | 0x8);
-        CGEventSetFlags(up, (1 << 20) | 0x8);
+        CGEventSetFlags(down, flags);
+        CGEventSetFlags(up, flags);
         const pid = objc.msg(i32, t.app.?, "processIdentifier", .{});
         // Address the remembered process as well as checking focus: a
         // focus change cannot deliver a delayed paste to another app.
