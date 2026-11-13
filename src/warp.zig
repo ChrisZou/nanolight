@@ -4,9 +4,37 @@
 const std = @import("std");
 
 pub const max_body = 2000;
-const warp_app = "/Applications/Warp.app";
+pub const Edition = struct {
+    app: []const u8,
+    executable: []const u8,
+    bundle_id: []const u8,
+    config_dir: []const u8,
+    url: []const u8,
+};
+
+const scripting: Edition = .{
+    .app = "/Applications/Warp Scripting.app",
+    .executable = "/Applications/Warp Scripting.app/Contents/MacOS/warp-oss",
+    .bundle_id = "dev.warp.WarpOss",
+    .config_dir = ".warp-oss/tab_configs",
+    .url = "warposs://tab_config/" ++ config_name,
+};
+const stable: Edition = .{
+    .app = "/Applications/Warp.app",
+    .executable = "/Applications/Warp.app/Contents/MacOS/stable",
+    .bundle_id = "dev.warp.Warp-Stable",
+    .config_dir = ".warp/tab_configs",
+    .url = "warp://tab_config/" ++ config_name,
+};
+
+fn installedEdition(io: std.Io) Error!Edition {
+    for ([_]Edition{ scripting, stable }) |edition| {
+        std.Io.Dir.accessAbsolute(io, edition.executable, .{}) catch continue;
+        return edition;
+    }
+    return error.WarpNotFound;
+}
 const config_name = "nanolight_wp";
-const url = "warp://tab_config/" ++ config_name;
 const workdir = "/code/ai/warp";
 var busy: std.atomic.Value(bool) = .init(false);
 
@@ -50,17 +78,17 @@ pub fn normalizeTask(allocator: std.mem.Allocator, task_in: []const u8) Error![]
 
 /// Called on a worker thread. This only prepares and opens the native agent
 /// tab; the main thread verifies `title` before touching the input.
-pub fn run(gpa: std.mem.Allocator, io: std.Io, home: []const u8, title: []const u8) Error!void {
+pub fn run(gpa: std.mem.Allocator, io: std.Io, home: []const u8, title: []const u8) Error!Edition {
     if (busy.swap(true, .acq_rel)) return error.Busy;
     defer busy.store(false, .release);
     if (home.len == 0 or !std.fs.path.isAbsolute(home) or title.len == 0 or !std.unicode.utf8ValidateSlice(title))
         return error.ConfigurationFailed;
-    std.Io.Dir.accessAbsolute(io, warp_app ++ "/Contents/MacOS/stable", .{}) catch return error.WarpNotFound;
+    const edition = try installedEdition(io);
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     const dir = try std.fmt.allocPrint(arena, "{s}" ++ workdir, .{home});
-    const config_dir = try std.fmt.allocPrint(arena, "{s}/.warp/tab_configs", .{home});
+    const config_dir = try std.fmt.allocPrint(arena, "{s}/{s}", .{ home, edition.config_dir });
     const path = try std.fmt.allocPrint(arena, "{s}/" ++ config_name ++ ".toml", .{config_dir});
     const text = config(arena, dir, title) catch return error.ConfigurationFailed;
     const cwd = std.Io.Dir.cwd();
@@ -68,7 +96,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, home: []const u8, title: []const 
     cwd.createDirPath(io, config_dir) catch return error.ConfigurationFailed;
     cwd.writeFile(io, .{ .sub_path = path, .data = text }) catch return error.ConfigurationFailed;
     const result = std.process.run(arena, io, .{
-        .argv = &.{ "/usr/bin/open", "-a", warp_app, url },
+        .argv = &.{ "/usr/bin/open", "-a", edition.app, edition.url },
         .stdout_limit = .limited(1024),
         .stderr_limit = .limited(4096),
         .timeout = .{ .deadline = .fromNow(io, .{ .raw = .fromMilliseconds(5000), .clock = .awake }) },
@@ -77,6 +105,7 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, home: []const u8, title: []const 
         .exited => |code| if (code != 0) return error.OpenFailed,
         else => return error.OpenFailed,
     }
+    return edition;
 }
 
 /// Only layout metadata goes in the config. All caller-provided strings are

@@ -759,6 +759,7 @@ const WarpJob = struct {
     clipboard_count: isize,
     activity: paste.Activity,
     target: paste.Target = .{},
+    edition: @import("warp.zig").Edition = undefined,
     attempts: u8 = 0,
     matched: u8 = 0,
     cancelled: bool = false,
@@ -769,11 +770,12 @@ const WarpJob = struct {
 
 fn warpWorker(job: *WarpJob) void {
     const l = job.live;
-    @import("warp.zig").run(l.app.gpa, l.app.io, l.home, job.title[0..job.title_len]) catch |err| {
+    defer job.done.store(true, .release);
+    job.edition = @import("warp.zig").run(l.app.gpa, l.app.io, l.home, job.title[0..job.title_len]) catch |err| {
         job.failed = true;
         std.log.warn("nanolight: Warp handoff failed: {s}", .{@errorName(err)});
+        return;
     };
-    job.done.store(true, .release);
 }
 
 fn warpFinish(l: *Live, failed: bool) void {
@@ -810,7 +812,7 @@ fn warpPoll(ctx: ?*anyopaque) callconv(.c) void {
         return warpFinish(l, true);
     }
     if (job.target.app == null) {
-        _ = job.target.rememberBundle("dev.warp.Warp-Stable", "/Applications/Warp.app");
+        _ = job.target.rememberBundle(job.edition.bundle_id, job.edition.app);
     }
     if (job.target.windowMatches(job.title[0..job.title_len])) {
         job.matched += 1;

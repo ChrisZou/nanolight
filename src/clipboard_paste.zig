@@ -139,7 +139,14 @@ pub const Target = struct {
                 for ([_][]const u8{ "AXButton", "AXMenu", "AXMenuItem", "AXSheet", "AXDialog" }) |blocked| {
                     if (std.mem.eql(u8, name, blocked)) return false;
                 }
-                if (std.mem.eql(u8, name, "AXTextField") or std.mem.eql(u8, name, "AXTextArea")) {
+                // Warp exposes its rendering surface as a text area directly
+                // under the window. Its value describes the whole terminal.
+                const warp_surface = std.mem.eql(u8, name, "AXTextArea") and surface: {
+                    const parent = axAttribute(focused, "AXParent") orelse break :surface false;
+                    defer CFRelease(parent);
+                    break :surface CFEqual(parent, window);
+                };
+                if (!warp_surface and (std.mem.eql(u8, name, "AXTextField") or std.mem.eql(u8, name, "AXTextArea"))) {
                     if (axAttribute(focused, "AXValue")) |value| {
                         defer CFRelease(value);
                         if (axString(value)) |text| if (text.len != 0) return false;
