@@ -917,6 +917,11 @@ test "AI replies size the row to the wrapped text without a second heading" {
     defer t.deinit();
     t.settle(1);
     try std.testing.expect(t.hasText("INLINEOK") and !t.hasText("Answer"));
+    const bo = @import("build_options");
+    var version: [64]u8 = undefined;
+    try std.testing.expect(t.hasText(try std.fmt.bufPrint(&version, "Nanolight {s} ({d})", .{ bo.version, bo.build })));
+    try std.testing.expect(t.hasText("Copy") and !t.hasText("Close"));
+    try std.testing.expectEqual(t.findText("AI").?.x, t.findText("INLINEOK").?.x);
     const short = s.height();
     try std.testing.expectEqual(@as(f32, 32), s.answer_height);
     s.aiDone(s.ai_gen, true, "line 1\nline 2\nline 3");

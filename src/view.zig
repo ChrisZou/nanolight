@@ -65,7 +65,8 @@ pub fn appIcon(c: *ui.Context, size: f32) void {
 pub const header_h = 58;
 pub const row_h = 40;
 const calc_h = 92;
-const answer_style: ui.TextStyle = .{ .size = 14, .line_height = 20, .wrap = true };
+const section_pad_x = 12;
+const answer_style: ui.TextStyle = .{ .size = 15, .line_height = 20, .wrap = true };
 const answer_pad_y = 6;
 const row_pad_x = 10;
 pub const section_h = 28;
@@ -260,8 +261,8 @@ pub const Nanolight = struct {
             s.clipFillDraw(c, p);
             return;
         }
-        if (s.res.n == 1 and s.res.rows[0].kind == .ai_answer) {
-            const lines = c.text.wrap(s.answerText(), answer_style, width - 2 * (list_pad + row_pad_x));
+        if (s.showingAnswer()) {
+            const lines = c.text.wrap(s.answerText(), answer_style, width - 2 * (list_pad + section_pad_x));
             const content_h = @as(f32, @floatFromInt(@max(1, lines.len))) * c.text.lineHeight(answer_style);
             const available = max_height - header_h - footer_h - section_h - 2 * list_pad - 2;
             s.answer_height = @min(content_h + 2 * answer_pad_y, available);
@@ -588,6 +589,10 @@ pub const Nanolight = struct {
         }
     }
 
+    fn showingAnswer(s: *const Nanolight) bool {
+        return !s.previewing and s.res.n == 1 and s.res.rows[0].kind == .ai_answer;
+    }
+
     fn list(s: *Nanolight, c: *ui.Context, p: Palette) void {
         const box = ui.div(c).column().wFull().p(list_pad);
         defer box.end();
@@ -614,10 +619,10 @@ pub const Nanolight = struct {
         const tr: motion.Transition = if (fresh_list) .instant else .{ .spring = slide };
         const hy = motion.number(c, "sel-y", sel_y, tr);
         const hh = motion.number(c, "sel-h", sel_h, tr);
-        ui.div(c).absolute().offset(0, hy).w(width - list_pad * 2).h(hh).rounded(10).bg(p.sel).border(p.rim).end();
+        if (!s.showingAnswer()) ui.div(c).absolute().offset(0, hy).w(width - list_pad * 2).h(hh).rounded(10).bg(p.sel).border(p.rim).end();
         for (s.res.slice(), 0..) |r, i| {
             if (s.res.section(i)) |name| {
-                const head = ui.div(c).row().wFull().h(section_h).px(12).pb(6).itemsEnd();
+                const head = ui.div(c).row().wFull().h(section_h).px(section_pad_x).pb(6).itemsEnd();
                 defer head.end();
                 ui.text(c, name, .{ .size = 11.5, .weight = .semibold, .color = p.sub.alpha(0.85) });
             }
@@ -631,7 +636,7 @@ pub const Nanolight = struct {
             .ai_answer => s.answer_height,
             else => row_h,
         };
-        const d = ui.div(c).row().wFull().h(rh).px(row_pad_x).gap(12).itemsCenter().control();
+        const d = ui.div(c).row().wFull().h(rh).px(if (r.kind == .ai_answer) section_pad_x else row_pad_x).gap(12).itemsCenter().control();
         defer d.end();
         if (d.clicked()) {
             s.sel = i;
@@ -790,8 +795,10 @@ pub const Nanolight = struct {
         const bar = ui.div(c).row().wFull().h(footer_h).px(16).gap(8).itemsCenter();
         defer bar.end();
         appIcon(c, 16);
-        // One quiet line: name + version/build, or an update note; always keep the apps count.
-        if (s.note.len > 0) {
+        const answer = s.showingAnswer();
+        if (answer) {
+            ui.textf(c, .{ .size = 12, .color = p.sub.alpha(0.8) }, "Nanolight {s} ({d})", .{ build_options.version, build_options.build });
+        } else if (s.note.len > 0) {
             ui.textf(c, .{ .size = 12, .weight = .medium, .color = p.sub.alpha(0.8) }, "{s} · {d} apps", .{ s.note, s.index.apps.items.len });
         } else {
             ui.textf(c, .{ .size = 12, .weight = .medium, .color = p.sub.alpha(0.8) }, "Nanolight {s} ({d}) · {d} apps", .{ build_options.version, build_options.build, s.index.apps.items.len });
@@ -815,9 +822,14 @@ pub const Nanolight = struct {
         }
         if (s.res.n == 0) return;
         const kind = s.res.rows[@min(s.sel, s.res.n - 1)].kind;
-        const copied = kind == .ai_answer and c.time - s.copied_at < 1.4;
-        if (copied) c.animationFrame();
-        ui.text(c, if (copied) "Copied" else kind.action(), .{ .size = 12, .weight = .medium, .color = p.text.alpha(0.85) });
+        if (answer) {
+            const copied = c.time - s.copied_at < 1.4;
+            if (copied) c.animationFrame();
+            ui.kbd(c, "↩");
+            ui.text(c, if (copied) "Copied" else "Copy", .{ .size = 12, .color = p.sub });
+            return;
+        }
+        ui.text(c, kind.action(), .{ .size = 12, .weight = .medium, .color = p.text.alpha(0.85) });
         ui.kbd(c, "↩");
         ui.div(c).w(1).h(14).bg(p.hair).end();
         ui.text(c, "Close", .{ .size = 12, .color = p.sub.alpha(0.8) });
