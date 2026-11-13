@@ -19,7 +19,7 @@ pub fn build(b: *std.Build) void {
     const nanoui = b.dependency("nanoui", .{ .target = target, .optimize = optimize }).module("nanoui");
     const version = b.option([]const u8, "version", "Nanolight's version, as the app shows it (release builds)") orelse "0.1.0";
     // Integer build shown next to the version in the footer; bump on every shipped fix.
-    const build_num = b.option(u32, "build", "Integer build number shown next to the version") orelse 23;
+    const build_num = b.option(u32, "build", "Integer build number shown next to the version") orelse 24;
     const opts = b.addOptions();
     opts.addOption([]const u8, "version", version);
     opts.addOption(u32, "build", build_num);

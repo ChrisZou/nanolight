@@ -902,3 +902,29 @@ test "the clipboard highlight stays on its row through the caret's blinks" {
         try t.expectEqual(@as(usize, 2), try highlightedClipRow(&tester, 6));
     }
 }
+
+test "AI replies size the row to the wrapped text without a second heading" {
+    const gpa = std.testing.allocator;
+    var ix: Index = .init(gpa);
+    defer ix.deinit();
+    var s: view.Nanolight = .{ .index = &ix };
+    defer s.query.deinit();
+    s.query.set("ai test");
+    s.rebuild();
+    s.aiDone(s.ai_gen, true, "INLINEOK");
+    var t: ui.Tester = undefined;
+    try t.init(gpa, .init(&s, view.Nanolight.view), .{ .width = view.width, .height = view.max_height, .dark = true });
+    defer t.deinit();
+    t.settle(1);
+    try std.testing.expect(t.hasText("INLINEOK") and !t.hasText("Answer"));
+    const short = s.height();
+    try std.testing.expectEqual(@as(f32, 32), s.answer_height);
+    s.aiDone(s.ai_gen, true, "line 1\nline 2\nline 3");
+    t.settle(1);
+    try std.testing.expectEqual(short + 40, s.height());
+    const paragraph = "Long paragraph with many words. ";
+    const paragraphs: [200][paragraph.len]u8 = @splat(paragraph.*);
+    s.aiDone(s.ai_gen, true, std.mem.asBytes(&paragraphs));
+    t.settle(1);
+    try std.testing.expectEqual(view.max_height, s.height());
+}

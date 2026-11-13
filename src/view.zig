@@ -65,7 +65,9 @@ pub fn appIcon(c: *ui.Context, size: f32) void {
 pub const header_h = 58;
 pub const row_h = 40;
 const calc_h = 92;
-const ai_h = 120;
+const answer_style: ui.TextStyle = .{ .size = 14, .line_height = 20, .wrap = true };
+const answer_pad_y = 6;
+const row_pad_x = 10;
 pub const section_h = 28;
 pub const footer_h = 38;
 pub const list_pad = 6;
@@ -150,6 +152,7 @@ pub const Nanolight = struct {
     ai_question_len: usize = 0,
     ai_buf: [@import("ai.zig").max_answer]u8 = undefined,
     ai_text: []const u8 = "",
+    answer_height: f32 = answer_style.line_height + 2 * answer_pad_y,
     /// Bumped each ask so a late answer is ignored.
     ai_gen: u32 = 0,
     /// Body for the current `pm ` / `af ` row.
@@ -184,7 +187,7 @@ pub const Nanolight = struct {
         for (s.res.slice(), 0..) |r, i| {
             h += switch (r.kind) {
                 .calc => calc_h,
-                .ai_answer => ai_h,
+                .ai_answer => s.answer_height,
                 else => row_h,
             };
             if (s.res.section(i) != null) h += section_h;
@@ -256,6 +259,12 @@ pub const Nanolight = struct {
         if (s.clip_mode) {
             s.clipFillDraw(c, p);
             return;
+        }
+        if (s.res.n == 1 and s.res.rows[0].kind == .ai_answer) {
+            const lines = c.text.wrap(s.answerText(), answer_style, width - 2 * (list_pad + row_pad_x));
+            const content_h = @as(f32, @floatFromInt(@max(1, lines.len))) * c.text.lineHeight(answer_style);
+            const available = max_height - header_h - footer_h - section_h - 2 * list_pad - 2;
+            s.answer_height = @min(content_h + 2 * answer_pad_y, available);
         }
         const h = s.follow(c, s.height());
         {
@@ -590,7 +599,7 @@ pub const Nanolight = struct {
             if (s.res.section(i) != null) y += section_h;
             const rh: f32 = switch (r.kind) {
                 .calc => calc_h,
-                .ai_answer => ai_h,
+                .ai_answer => s.answer_height,
                 else => row_h,
             };
             if (i == s.sel) {
@@ -619,10 +628,10 @@ pub const Nanolight = struct {
     fn row(s: *Nanolight, c: *ui.Context, p: Palette, i: usize, r: Row) void {
         const rh: f32 = switch (r.kind) {
             .calc => calc_h,
-            .ai_answer => ai_h,
+            .ai_answer => s.answer_height,
             else => row_h,
         };
-        const d = ui.div(c).row().wFull().h(rh).px(10).gap(12).itemsCenter().control();
+        const d = ui.div(c).row().wFull().h(rh).px(row_pad_x).gap(12).itemsCenter().control();
         defer d.end();
         if (d.clicked()) {
             s.sel = i;
@@ -697,12 +706,15 @@ pub const Nanolight = struct {
     }
 
     fn aiCard(s: *Nanolight, c: *ui.Context, p: Palette) void {
-        const box = ui.div(c).column().wFull().gap(8).px(4);
+        const box = ui.div(c).column().wFull().h(s.answer_height).py(answer_pad_y).scrollY();
         defer box.end();
-        const label: []const u8 = if (s.ai_status == .failed) "Failed" else if (c.time - s.copied_at < 1.4) "Copied" else "Answer";
-        if (c.time - s.copied_at < 1.4) c.animationFrame();
-        ui.text(c, label, .{ .size = 11, .weight = .medium, .color = p.sub });
-        ui.text(c, if (s.ai_text.len > 0) s.ai_text else "No answer", .{ .size = 14, .color = p.text, .truncate = .ellipsis });
+        var style = answer_style;
+        style.color = p.text;
+        ui.text(c, s.answerText(), style);
+    }
+
+    fn answerText(s: *const Nanolight) []const u8 {
+        return if (s.ai_text.len > 0) s.ai_text else "No answer";
     }
 
     /// Codex finished (or failed) for generation `gen`.
@@ -802,7 +814,10 @@ pub const Nanolight = struct {
             return;
         }
         if (s.res.n == 0) return;
-        ui.text(c, s.res.rows[@min(s.sel, s.res.n - 1)].kind.action(), .{ .size = 12, .weight = .medium, .color = p.text.alpha(0.85) });
+        const kind = s.res.rows[@min(s.sel, s.res.n - 1)].kind;
+        const copied = kind == .ai_answer and c.time - s.copied_at < 1.4;
+        if (copied) c.animationFrame();
+        ui.text(c, if (copied) "Copied" else kind.action(), .{ .size = 12, .weight = .medium, .color = p.text.alpha(0.85) });
         ui.kbd(c, "↩");
         ui.div(c).w(1).h(14).bg(p.hair).end();
         ui.text(c, "Close", .{ .size = 12, .color = p.sub.alpha(0.8) });
