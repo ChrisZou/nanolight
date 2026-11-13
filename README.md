@@ -17,7 +17,7 @@ Apps, math, files, images, clipboard history and Ask Codex: one keystroke away. 
 - **Images via Picemon**: type `img ` or `pic ` plus a keyword. Picemon has no public CLI/URL scheme yet, so Nanolight queries its local SQLite index (`~/Library/Application Support/Picemon/picemon.db`) for OCR / description / tags / path. Return opens the file.
 - **Files via FSearch**: type `f `, `find `, or `file ` plus a name. Uses the installed [`fsearch`](https://github.com/noahdunnagan/fsearch) CLI/daemon (`~/.local/bin/fsearch`); Return opens the path.
 - **Ask Codex**: plain queries default to a local Codex ask (Return). Or type `ai ` / `ask ` plus a question. Return on the answer copies it.
-- **Warp agent**: type `wp ` plus a task to open a native Warp Agent conversation with the prompt filled in. Press Return in Warp to send it. Uses Warp's selected model (currently 火山 Agent Plan's Kimi K3.1 Pro) and new-tab directory settings; enable **Settings → Scripting** in Warp once for this integration.
+- **Warp agent**: type `wp ` plus a task to open a native Warp Agent conversation with the prompt filled in. Press Return in Warp to send it. Uses Warp's selected model and `~/code/ai/warp`. Allow Nanolight in macOS **Privacy & Security → Accessibility** for automatic paste; Warp Scripting is not required. The task remains on the clipboard. Typing, clicking, copying other content, or reopening Nanolight before paste cancels the handoff and preserves the task for retry.
 - **⌘1–⌘9** run a row at once; ↑ ↓ and ⌃N ⌃P move.
 - Lives in the menu bar: no Dock icon, and nothing drawn while it's idle.
 - **Restart or quit from the panel**: type `reload` / `restart` / `re`…, Chinese `重启` / `重载`, or `quit` / `退出` / `关掉`, then Return.

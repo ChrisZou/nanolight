@@ -189,13 +189,22 @@ pub const Live = struct {
         }
     }
 
-    /// Opens a native Warp Agent conversation and stages its first prompt.
+    /// Opens a native Warp Agent tab, then pastes on the main thread.
     fn warpRun(ctx: *anyopaque, task: []const u8) bool {
         const l: *Live = @ptrCast(@alignCast(ctx));
-        if (l.warp_job != null or task.len == 0 or task.len > @import("warp.zig").max_body) return false;
+        if (!mac or l.warp_job != null or l.paste_waiting) return false;
+        const normalized = @import("warp.zig").normalizeTask(l.app.gpa, task) catch return false;
+        defer l.app.gpa.free(normalized);
+        // Request Nanolight's existing Accessibility permission only when used.
+        // Keep the launcher task intact if permission has not been granted.
+        if (!paste.trusted(true)) return false;
         const job = l.app.gpa.create(WarpJob) catch return false;
-        job.* = .{ .live = l, .len = task.len };
-        @memcpy(job.task[0..task.len], task);
+        job.* = .{ .live = l, .len = normalized.len, .clipboard_count = nanoui.clipboard.changeCount(), .activity = paste.Activity.capture() };
+        @memcpy(job.task[0..normalized.len], normalized);
+        const uuid = objc.msg(objc.Object, objc.class("NSUUID"), "UUID", .{});
+        const unique = objc.fromNSString(objc.msg(objc.Object, uuid, "UUIDString", .{}));
+        const title = std.fmt.bufPrint(&job.title, "Nanolight · {s}", .{unique[0..13]}) catch unreachable;
+        job.title_len = title.len;
         l.warp_job = job;
         const thread = std.Thread.spawn(.{}, warpWorker, .{job}) catch {
             l.warp_job = null;
@@ -613,6 +622,7 @@ pub const Live = struct {
     fn show(l: *Live) void {
         const w = l.window orelse return;
         l.paste_waiting = false;
+        if (l.warp_job) |job| job.cancelled = true;
         l.paste_target.remember();
         // Freed a key in System Settings, quit a launcher: look again.
         if (l.o.active) l.o.refresh();
@@ -739,11 +749,19 @@ pub const Live = struct {
     }
 };
 
-/// A native Warp handoff in flight; never runs an Oz agent or submits input.
+/// Opening runs off-thread; focus checks and paste stay on AppKit's thread.
 const WarpJob = struct {
     live: *Live,
     task: [@import("warp.zig").max_body]u8 = undefined,
     len: usize,
+    title: [64]u8 = undefined,
+    title_len: usize = 0,
+    clipboard_count: isize,
+    activity: paste.Activity,
+    target: paste.Target = .{},
+    attempts: u8 = 0,
+    matched: u8 = 0,
+    cancelled: bool = false,
     thread: ?std.Thread = null,
     failed: bool = false,
     done: std.atomic.Value(bool) = .init(false),
@@ -751,38 +769,19 @@ const WarpJob = struct {
 
 fn warpWorker(job: *WarpJob) void {
     const l = job.live;
-    @import("warp.zig").run(l.app.gpa, l.app.io, job.task[0..job.len]) catch |err| {
+    @import("warp.zig").run(l.app.gpa, l.app.io, l.home, job.title[0..job.title_len]) catch |err| {
         job.failed = true;
         std.log.warn("nanolight: Warp handoff failed: {s}", .{@errorName(err)});
-        const message: []const u8 = switch (err) {
-            error.ScriptingDisabled => "请在 Warp → Settings → Scripting 中开启 Enabled",
-            error.AmbiguousInstance, error.AmbiguousTarget => "无法确定目标 Warp 窗口，请重试",
-            error.WarpNotFound => "未找到 Warp，请先安装 Warp",
-            error.TargetChanged, error.MissingTarget => "Warp 对话已切换，请重试",
-            error.BadTask, error.InputRejected => "任务包含不支持的控制字符",
-            else => "未能填入 Warp 对话，请重试",
-        };
-        var arena: std.heap.ArenaAllocator = .init(l.app.gpa);
-        defer arena.deinit();
-        const script = std.fmt.allocPrint(arena.allocator(), "display notification \"{s}\" with title \"Nanolight\"", .{message}) catch return job.done.store(true, .release);
-        _ = std.process.run(arena.allocator(), l.app.io, .{
-            .argv = &.{ "/usr/bin/osascript", "-e", script },
-            .stdout_limit = .limited(1024),
-            .stderr_limit = .limited(1024),
-            .create_no_window = true,
-            .timeout = .{ .deadline = .fromNow(l.app.io, .{ .raw = .fromMilliseconds(3000), .clock = .awake }) },
-        }) catch {};
     };
     job.done.store(true, .release);
 }
 
-fn warpPoll(ctx: ?*anyopaque) callconv(.c) void {
-    const l: *Live = @ptrCast(@alignCast(ctx.?));
+fn warpFinish(l: *Live, failed: bool) void {
     const job = l.warp_job orelse return;
-    if (!job.done.load(.acquire)) return nanoui.App.after(100, l, warpPoll);
     if (job.thread) |thread| thread.join();
+    job.target.deinit();
     // Keep a failed task available for retry without replacing a newer query.
-    if (job.failed and l.s.query.text().len == 0) {
+    if (failed and l.s.query.text().len == 0) {
         var text: [@import("warp.zig").max_body + 3]u8 = undefined;
         const query = std.fmt.bufPrint(&text, "wp {s}", .{job.task[0..job.len]}) catch "";
         l.s.query.set(query);
@@ -791,6 +790,52 @@ fn warpPoll(ctx: ?*anyopaque) callconv(.c) void {
     }
     l.warp_job = null;
     l.app.gpa.destroy(job);
+}
+
+fn warpPoll(ctx: ?*anyopaque) callconv(.c) void {
+    const l: *Live = @ptrCast(@alignCast(ctx.?));
+    const job = l.warp_job orelse return;
+    if (!job.done.load(.acquire)) return nanoui.App.after(100, l, warpPoll);
+    if (job.thread) |thread| {
+        thread.join();
+        job.thread = null;
+    }
+    if (job.failed) return warpFinish(l, true);
+    // A new copy or reopening the launcher cancels this handoff permanently.
+    if (job.cancelled or !job.activity.unchanged() or nanoui.clipboard.changeCount() != job.clipboard_count or
+        (if (l.window) |w| w.isVisible() else false)) return warpFinish(l, true);
+    job.attempts += 1;
+    if (job.attempts >= 120) {
+        std.log.warn("nanolight: Warp Agent did not become ready for paste", .{});
+        return warpFinish(l, true);
+    }
+    if (job.target.app == null) {
+        _ = job.target.rememberBundle("dev.warp.Warp-Stable", "/Applications/Warp.app");
+    }
+    if (job.target.windowMatches(job.title[0..job.title_len])) {
+        job.matched += 1;
+        // Allow the newly focused Agent to finish creating its input. The title
+        // must remain exact; no blind paste into a previously active session.
+        if (job.attempts >= 10 and job.matched >= 3) {
+            const pb = objc.msg(objc.Object, objc.class("NSPasteboard"), "generalPasteboard", .{});
+            if (objc.msg(objc.NSInteger, pb, "changeCount", .{}) != job.clipboard_count)
+                return warpFinish(l, true);
+            _ = objc.msg(objc.NSInteger, pb, "clearContents", .{});
+            _ = objc.msg(objc.BOOL, pb, "setString:forType:", .{ objc.nsString(""), objc.nsString("org.nspasteboard.TransientType") });
+            if (!objc.msg(objc.BOOL, pb, "setString:forType:", .{ objc.nsString(job.task[0..job.len]), objc.nsString("public.utf8-plain-text") }))
+                return warpFinish(l, true);
+            const own_count = nanoui.clipboard.changeCount();
+            // Recheck after touching the pasteboard, immediately before the
+            // process-addressed Cmd+V. Never send Return or retry the event.
+            if (!job.target.windowMatches(job.title[0..job.title_len]) or !job.activity.unchanged() or nanoui.clipboard.changeCount() != own_count)
+                return warpFinish(l, true);
+            job.target.send() catch return warpFinish(l, true);
+            return warpFinish(l, false);
+        }
+    } else if (job.matched != 0) {
+        return warpFinish(l, true);
+    }
+    nanoui.App.after(100, l, warpPoll);
 }
 
 /// A Codex one-shot in flight.
@@ -919,6 +964,7 @@ pub fn main(init: std.process.Init) !void {
     var live: Live = .{ .app = app, .s = &s, .o = &o, .kv = kv, .clipboard = &clips, .choice = shortcut.load(kv, init.gpa), .home = init.environ_map.get("HOME") orelse "" };
     defer if (live.warp_job) |job| {
         if (job.thread) |thread| thread.join();
+        job.target.deinit();
         app.gpa.destroy(job);
     };
     defer live.paste_target.deinit();
