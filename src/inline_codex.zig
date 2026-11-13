@@ -1,4 +1,4 @@
-//! Keep a local Codex app-server ready while the launcher is in use.
+//! Connect to the managed Codex daemon while the launcher is in use.
 //! Each submitted question gets its own ephemeral thread.
 const std = @import("std");
 const nanoui = @import("nanoui");
@@ -8,9 +8,11 @@ const idle_seconds = 60;
 const setup_seconds = 12;
 
 pub const Session = struct {
-    child: ?std.process.Child = null,
+    socket: ?@import("codex_socket.zig").Client = null,
+    retry_after: i64 = 0,
     watch: ?nanoui.fdwatch.Watch = null,
-    lines: std.ArrayList(u8) = .empty,
+    turn: [128]u8 = undefined,
+    turn_len: usize = 0,
     thread: [128]u8 = undefined,
     thread_len: usize = 0,
     between_questions: bool = false,
@@ -32,25 +34,25 @@ pub const Session = struct {
     }
 
     pub fn warm(s: *Session) void {
-        if (s.child != null) {
+        if (s.socket != null) {
             if (s.between_questions) s.prepare() catch return s.stop();
             if (s.thread_len > 0 and !s.submitted) s.deadline = s.now() + idle_seconds;
             return;
         }
         const l = s.live();
-        var path: [512]u8 = undefined;
-        const exe = ai.findCodex(l.app.io, &path, l.home);
-        if (exe.len == 0) return;
-        s.child = std.process.spawn(l.app.io, .{
-            .argv = &.{ exe, "app-server", "--stdio" },
-            .stdin = .pipe,
-            .stdout = .pipe,
-            .stderr = .ignore,
-            .pgid = 0,
-        }) catch return;
-        if (std.c.fcntl(s.child.?.stdin.?.handle, std.c.F.SETNOSIGPIPE, @as(c_int, 1)) == -1) return s.stop();
-        s.watch = nanoui.fdwatch.readable(s.child.?.stdout.?.handle, s, readable) catch return s.stop();
-        s.send(.{ .id = 1, .method = "initialize", .params = .{ .clientInfo = .{ .name = "nanolight", .version = @import("build_options").version } } }) catch return s.stop();
+        if (s.now() < s.retry_after) return;
+        var buf: [1024]u8 = undefined;
+        const suffix = "/app-server-control/app-server-control.sock";
+        const home = if (l.env) |env| env.get("CODEX_HOME") else null;
+        const path = if (home) |dir|
+            std.fmt.bufPrint(&buf, "{s}" ++ suffix, .{dir}) catch return
+        else
+            std.fmt.bufPrint(&buf, "{s}/.codex" ++ suffix, .{l.home}) catch return;
+        s.socket = @import("codex_socket.zig").Client.connect(l.app.io, path) catch {
+            s.retry_after = s.now() + 2;
+            return;
+        };
+        s.watch = nanoui.fdwatch.readable(s.socket.?.stream.socket.handle, s, readable) catch return s.stop();
         s.deadline = s.now() + setup_seconds;
         if (!s.timer) {
             s.timer = true;
@@ -58,9 +60,13 @@ pub const Session = struct {
         }
     }
 
+    pub fn initialize(s: *Session) !void {
+        try s.send(.{ .id = 1, .method = "initialize", .params = .{ .clientInfo = .{ .name = "nanolight", .version = @import("build_options").version } } });
+    }
+
     pub fn ask(s: *Session, question: []const u8, gen: u32) bool {
         s.warm();
-        if (s.child == null or question.len == 0 or question.len > s.question.len) return false;
+        if (s.socket == null or question.len == 0 or question.len > s.question.len) return false;
         @memcpy(s.question[0..question.len], question);
         s.question_len = question.len;
         s.gen = gen;
@@ -86,21 +92,22 @@ pub const Session = struct {
         var out: std.Io.Writer.Allocating = .init(s.live().app.gpa);
         defer out.deinit();
         try std.json.Stringify.value(msg, .{}, &out.writer);
-        try out.writer.writeByte('\n');
-        try s.child.?.stdin.?.writeStreamingAll(s.live().app.io, out.written());
+        try s.socket.?.send(s.live().app.io, s.live().app.gpa, .text, out.written());
     }
 
     pub fn stop(s: *Session) void {
         if (s.watch) |w| w.cancel();
         s.watch = null;
-        if (s.child) |*child| {
-            _ = std.c.kill(-child.id.?, std.posix.SIG.KILL);
-            _ = child.wait(s.live().app.io) catch {};
+        if (s.socket) |*socket| {
+            if (s.submitted and s.turn_len > 0) {
+                s.send(.{ .id = 5, .method = "turn/interrupt", .params = .{ .threadId = s.thread[0..s.thread_len], .turnId = s.turn[0..s.turn_len] } }) catch {};
+            }
+            socket.close(s.live().app.io, s.live().app.gpa);
         }
-        s.child = null;
+        s.socket = null;
+        s.turn_len = 0;
         s.between_questions = false;
         s.thread_len = 0;
-        s.lines.clearAndFree(s.live().app.gpa);
     }
 
     fn failed(s: *Session, message: []const u8) void {
@@ -110,8 +117,7 @@ pub const Session = struct {
         const submitted = s.submitted;
         s.submitted = false;
         if (n == 0) return;
-        // An older CLI can still handle the question using exec. Once sent,
-        // a disconnected turn must never be run a second time.
+        // Only fall back before submitting a prompt. Never replay a turn.
         if (!submitted) return s.live().aiAskExec(s.question[0..n]);
         s.finish(false, message);
     }
@@ -123,26 +129,21 @@ pub const Session = struct {
 
     fn tick(ctx: ?*anyopaque) callconv(.c) void {
         const s: *Session = @ptrCast(@alignCast(ctx.?));
-        if (s.child != null and s.now() >= s.deadline) s.failed("Codex took too long");
-        s.timer = s.child != null;
+        if (s.socket != null and s.now() >= s.deadline) s.failed("Codex took too long");
+        s.timer = s.socket != null;
         if (s.timer) nanoui.App.after(1000, s, tick);
     }
 
     fn readable(ctx: ?*anyopaque) callconv(.c) void {
         const s: *Session = @ptrCast(@alignCast(ctx.?));
-        const child = s.child orelse return;
+        const socket = if (s.socket) |*socket| socket else return;
         var buf: [32 * 1024]u8 = undefined;
-        const n = std.c.read(child.stdout.?.handle, &buf, buf.len);
+        const n = std.c.read(socket.stream.socket.handle, &buf, buf.len);
         if (n <= 0) return s.failed("Codex disconnected");
-        s.lines.appendSlice(s.live().app.gpa, buf[0..@intCast(n)]) catch return s.failed("Couldn't read Codex reply");
-        while (std.mem.indexOfScalar(u8, s.lines.items, '\n')) |nl| {
-            s.handle(s.lines.items[0..nl]) catch return s.failed("Couldn't read Codex reply");
-            s.lines.replaceRangeAssumeCapacity(0, nl + 1, &.{});
-        }
-        if (s.lines.items.len > 4 * 1024 * 1024) s.failed("Codex reply too large");
+        socket.feed(s.live().app.io, s.live().app.gpa, buf[0..@intCast(n)], s) catch s.failed("Codex disconnected");
     }
 
-    fn handle(s: *Session, line: []const u8) !void {
+    pub fn handle(s: *Session, line: []const u8) !void {
         const json = try std.json.parseFromSlice(std.json.Value, s.live().app.gpa, line, .{});
         defer json.deinit();
         const msg = json.value;
@@ -167,6 +168,12 @@ pub const Session = struct {
                     s.deadline = s.now() + idle_seconds;
                     if (s.question_len > 0) try s.submit();
                 },
+                3 => {
+                    const turn = string(field(field(msg, "result"), "turn"), "id");
+                    if (turn.len > s.turn.len) return error.BadTurn;
+                    @memcpy(s.turn[0..turn.len], turn);
+                    s.turn_len = turn.len;
+                },
                 else => {},
             }
             return;
@@ -185,6 +192,7 @@ pub const Session = struct {
             s.answer_len = n;
         } else if (std.mem.eql(u8, method, "turn/completed")) {
             s.submitted = false;
+            s.turn_len = 0;
             s.question_len = 0;
             const turn = field(params, "turn");
             if (!std.mem.eql(u8, string(turn, "status"), "completed")) {

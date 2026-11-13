@@ -33,6 +33,7 @@ test {
     switch (@import("builtin").os.tag) {
         .macos => {
             _ = @import("single_mac.zig");
+            _ = @import("codex_socket.zig");
             _ = @import("clickthrough.zig");
             _ = @import("hotkey_mac.zig");
             _ = @import("recorder.zig");
