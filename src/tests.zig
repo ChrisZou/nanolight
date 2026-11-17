@@ -934,3 +934,42 @@ test "AI replies size the row to the wrapped text without a second heading" {
     t.settle(1);
     try std.testing.expectEqual(view.max_height, s.height());
 }
+
+test "System Settings aliases render one pane and Return opens its URL without app launches" {
+    if (@import("builtin").os.tag != .macos) return error.SkipZigTest;
+    const panes = @import("system_settings.zig").panes;
+    var ix: Index = .init(std.testing.allocator);
+    defer ix.deinit();
+    try ix.add("Keyboard Maestro", "/Applications/Keyboard Maestro.app");
+    var probe: Probe = .{};
+    var s: view.Nanolight = .{ .index = &ix };
+    defer s.query.deinit();
+    s.host = .{ .ctx = &probe, .open = Probe.open, .hide = Probe.hide };
+    s.reveal();
+    var tester: ui.Tester = undefined;
+    try tester.init(std.testing.allocator, .init(&s, view.Nanolight.view), .{ .width = view.width, .height = 480, .dark = true });
+    defer tester.deinit();
+    tester.settle(1);
+    for (panes, 0..) |pane, i| {
+        for (pane.aliases) |alias| {
+            probe = .{};
+            press(&tester, &.{ .{ .command = .select_all }, .{ .insert = alias } });
+            try std.testing.expectEqual(results.Kind.system_pane, s.res.rows[0].kind);
+            try std.testing.expectEqual(i, s.res.rows[0].pane);
+            try std.testing.expect(tester.hasText(pane.title));
+            try std.testing.expect(tester.hasText("System Settings"));
+            try std.testing.expectEqual(results.Kind.ai_ask, s.res.rows[s.res.n - 1].kind);
+            var count: usize = 0;
+            for (s.res.slice()) |row| if (row.kind == .system_pane) {
+                count += 1;
+            };
+            try std.testing.expectEqual(@as(usize, 1), count);
+            press(&tester, &.{.{ .command = .insert_newline }});
+            try std.testing.expectEqualStrings(pane.url, probe.opened[0..probe.opened_len]);
+            try std.testing.expect(probe.hidden);
+            try std.testing.expect(!s.settings_ui.open);
+            try std.testing.expectEqual(@as(u16, 0), ix.launches.items[0]);
+            try std.testing.expectEqual(@as(usize, 0), tester.clipboard.items.len);
+        }
+    }
+}

@@ -124,6 +124,7 @@ pub const Live = struct {
 
     fn open(ctx: *anyopaque, target: []const u8) void {
         const l: *Live = @ptrCast(@alignCast(ctx));
+        if (mac and @import("system_settings.zig").openIfPane(target, nanoui.shell.openUrl)) return;
         if (std.mem.startsWith(u8, target, "https://") or std.mem.startsWith(u8, target, "http://")) {
             _ = nanoui.shell.openUrl(target);
         } else if (rc.isCommand(target)) {

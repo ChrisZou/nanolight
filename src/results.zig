@@ -1,10 +1,11 @@
 //! What the panel lists for a query, in order: the answer when it is math,
-//! the apps that match it (nothing, with no query), then Ask Codex
+//! matching macOS settings panes and apps (nothing, with no query), then Ask Codex
 //! for exactly what is typed. Built-in commands (`reload` / `quit` / `pm `,
 //! and their aliases) list only themselves. Prefix modes (`img` / `f` /
 //! `ai`) keep their own lists. With no app or answer, Return asks Codex.
 const std = @import("std");
 const search = @import("search.zig");
+const system_settings = @import("system_settings.zig");
 const calc = @import("calc.zig");
 const mac = @import("builtin").os.tag == .macos;
 
@@ -29,6 +30,7 @@ pub const Kind = enum {
     warp,
     calc,
     app,
+    system_pane,
     /// A Picemon image hit (`Row.pic`).
     pic,
     /// An FSearch file hit (`Row.file`).
@@ -53,6 +55,7 @@ pub const Kind = enum {
             .warp => "Warp",
             .calc => "Calculator",
             .app => "Application",
+            .system_pane => "System Settings",
             .pic => "Image",
             .file => "File",
             .ai_ask, .ai_answer => "AI",
@@ -73,6 +76,7 @@ pub const Kind = enum {
             .warp => "Open Warp Agent",
             .calc => "Copy Answer",
             .app => "Open Application",
+            .system_pane => "Open Settings",
             .pic => "Open Image",
             .file => "Open File",
             .ai_ask => "Ask Codex",
@@ -100,6 +104,7 @@ pub const Kind = enum {
             .restart, .quit, .pm, .af, .gb => "Nanolight",
             .warp => "Warp",
             .calc => "Calculator",
+            .system_pane => "System Settings",
             .app => if (suggested) "Suggestions" else "Applications",
             .pic => "Images",
             .file => "Files",
@@ -115,6 +120,8 @@ pub const Row = struct {
     kind: Kind,
     /// The app's index (`.app`).
     app: u32 = 0,
+    /// Index into the fixed macOS System Settings catalog.
+    pane: u8 = 0,
     /// Which of the completions (`.suggest`).
     web: u8 = 0,
     /// Which Picemon hit (`.pic`).
@@ -128,7 +135,7 @@ pub const Row = struct {
 pub const max_apps = 6;
 /// Google's completions (unused in the default list; kept for preview helpers).
 pub const max_web = 4;
-/// Apps plus Ask Codex; also caps pic/file lists (their own max is 8).
+/// Settings panes, apps and Ask Codex; also caps pic/file lists (their own max is 8).
 pub const max_rows = 8;
 /// The handoff that follows apps: Ask Codex only.
 const handoffs = 1;
@@ -181,9 +188,18 @@ pub const Results = struct {
                 "";
             r.push(.{ .kind = .calc });
         }
+        // One row per pane, regardless of how many aliases match. Reserve
+        // Ask Codex's slot; settings hits precede apps for direct navigation.
+        if (mac) for (system_settings.panes, 0..) |pane, i| {
+            if (r.n >= max_rows - handoffs) break;
+            if (pane.matches(query)) r.push(.{ .kind = .system_pane, .pane = @intCast(i) });
+        };
         var ranked: [max_apps]search.Ranked = undefined;
         const n = search.rank(query, names, aliases, boost, &ranked);
-        for (ranked[0..n]) |x| r.push(.{ .kind = .app, .app = x.index, .match = x.match });
+        for (ranked[0..n]) |x| {
+            if (r.n >= max_rows - handoffs) break;
+            r.push(.{ .kind = .app, .app = x.index, .match = x.match });
+        }
         // "settings" / "preferences": Nanolight's own screen, right under
         // the apps: Return still opens System Settings, a key away from this.
         if (isSettings(query)) r.push(.{ .kind = .settings });
@@ -268,7 +284,7 @@ pub fn url(buf: []u8, kind: Kind, query: []const u8) []const u8 {
         .ask_grok => "https://grok.com/?q=",
         .search_x => "https://x.com/search?f=live&q=",
         .search_web, .suggest => "https://www.google.com/search?q=",
-        .calc, .app, .settings, .clipboard, .restart, .quit, .pm, .af, .gb, .warp, .pic, .file, .ai_ask, .ai_answer => return "",
+        .calc, .app, .system_pane, .settings, .clipboard, .restart, .quit, .pm, .af, .gb, .warp, .pic, .file, .ai_ask, .ai_answer => return "",
     };
     var w: std.Io.Writer = .fixed(buf);
     w.writeAll(base) catch return "";
@@ -405,4 +421,22 @@ test "pm is a built-in command row" {
 test "queries are escaped into the address" {
     var buf: [128]u8 = undefined;
     try std.testing.expectEqualStrings("https://x.com/search?f=live&q=liquid+glass+%26+UI", url(&buf, .search_x, " liquid glass & UI "));
+}
+
+test "settings panes keep app results and AI fallback even with a full app list" {
+    if (!mac) return error.SkipZigTest;
+    var r: Results = .{};
+    const names = [_][]const u8{ "Keyboard Maestro", "Keyboard A", "Keyboard B", "Keyboard C", "Keyboard D", "Keyboard E", "Keyboard F" };
+    r.build("keyboard", &names, &.{}, &.{}, &.{}, &.{});
+    try std.testing.expectEqual(Kind.system_pane, r.rows[0].kind);
+    try std.testing.expectEqualStrings("Keyboard", system_settings.panes[r.rows[0].pane].title);
+    try std.testing.expectEqual(@as(usize, max_rows), r.n);
+    for (r.rows[1 .. r.n - 1]) |row| try std.testing.expectEqual(Kind.app, row.kind);
+    try std.testing.expectEqual(Kind.ai_ask, r.rows[r.n - 1].kind);
+    r.build("keyboard maestro", &names, &.{}, &.{}, &.{}, &.{});
+    try std.testing.expectEqual(Kind.app, r.rows[0].kind);
+    try std.testing.expectEqual(@as(u32, 0), r.rows[0].app);
+    r.build("how to remap keyboard", &names, &.{}, &.{}, &.{}, &.{});
+    try std.testing.expectEqual(@as(usize, 1), r.n);
+    try std.testing.expectEqual(Kind.ai_ask, r.rows[0].kind);
 }

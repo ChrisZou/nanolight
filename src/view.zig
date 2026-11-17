@@ -584,6 +584,7 @@ pub const Nanolight = struct {
         for (s.res.slice(), 0..) |now, i| {
             const same_row = now.kind == r.kind and switch (r.kind) {
                 .app => now.app == r.app,
+                .system_pane => now.pane == r.pane,
                 .pic => now.pic == r.pic,
                 .file => now.file == r.file,
                 .suggest => suggest.same(s.web.get(now.web), was_text[0..was_len]),
@@ -665,6 +666,7 @@ pub const Nanolight = struct {
                 ui.richText(c, a.name, s.highlight(i, r, p), .{ .size = 13.5, .weight = .medium, .color = p.text.alpha(0.82) });
                 ui.text(c, a.folder, .{ .size = 12, .color = p.sub.alpha(0.8) });
             },
+            .system_pane => ui.text(c, @import("system_settings.zig").panes[r.pane].title, .{ .size = 13.5, .weight = .medium, .color = p.text }),
             .pic => {
                 const hit = s.pics.get(r.pic);
                 ui.text(c, hit.name(), .{ .size = 13.5, .weight = .medium, .color = p.text, .truncate = .ellipsis });
@@ -708,7 +710,7 @@ pub const Nanolight = struct {
         }
         ui.spacer(c);
         if (i == s.sel) {
-            ui.text(c, if (r.kind == .app or r.kind == .settings or r.kind == .pic or r.kind == .file or r.kind == .warp) "Open" else if (r.kind == .ai_answer) "Copy" else if (r.kind == .ai_ask) "Ask" else if (r.kind == .restart) "Restart" else if (r.kind == .quit) "Quit" else if (r.kind.bot() != null) "Send" else "Go", .{ .size = 12, .weight = .medium, .color = p.sub });
+            ui.text(c, if (r.kind == .app or r.kind == .system_pane or r.kind == .settings or r.kind == .pic or r.kind == .file or r.kind == .warp) "Open" else if (r.kind == .ai_answer) "Copy" else if (r.kind == .ai_ask) "Ask" else if (r.kind == .restart) "Restart" else if (r.kind == .quit) "Quit" else if (r.kind.bot() != null) "Send" else "Go", .{ .size = 12, .weight = .medium, .color = p.sub });
             ui.kbd(c, "↩");
         } else if (i < 9) ui.textf(c, .{ .size = 12, .weight = .medium, .color = p.sub.alpha(0.5), .tabular = true }, "{s}{d}", .{ results.mod, i + 1 });
     }
@@ -768,7 +770,7 @@ pub const Nanolight = struct {
             .ask_grok => "sparkles",
             .search_web => "globe",
             .suggest => "magnifyingglass",
-            .settings => "gearshape",
+            .settings, .system_pane => "gearshape",
             else => "app.dashed",
         }, .{ .size = if (big) 16 else 13, .weight = .medium, .color = p.text });
     }
@@ -882,6 +884,7 @@ pub const Nanolight = struct {
                 s.index.opened(r.app, s.kv);
                 s.go(s.index.apps.items[r.app].path);
             },
+            .system_pane => s.go(@import("system_settings.zig").panes[r.pane].url),
             .pic => s.go(s.pics.get(r.pic).slice()),
             .file => s.go(s.files.get(r.file).slice()),
             .ai_ask => {
